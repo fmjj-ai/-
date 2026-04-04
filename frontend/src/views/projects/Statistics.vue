@@ -128,8 +128,8 @@
             <a-empty description="请在左侧选择数据集" />
           </div>
           
-          <div v-else-if="loading" class="empty-state">
-            <a-spin size="large" />
+          <div v-else-if="loading" class="empty-state" style="padding: 40px;">
+            <a-skeleton active :paragraph="{ rows: 10 }" />
           </div>
 
           <div v-else>
@@ -147,9 +147,9 @@
             <div v-if="selectedMenu[0] === 'descriptive' && descData">
               <h3 v-if="Object.keys(descData.numeric).length">数值列统计</h3>
               <a-table 
-                v-if="Object.keys(descData.numeric).length"
+                v-if="formattedDescData.length"
                 :columns="descNumericColumns" 
-                :data-source="formatNumericDesc(descData.numeric)" 
+                :data-source="formattedDescData" 
                 :pagination="false" 
                 bordered 
                 size="small" 
@@ -188,14 +188,54 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed, watch, onBeforeUnmount } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import request from '@/utils/request'
 import Chart from '@/components/Chart.vue'
+import DataWorker from '@/workers/dataWorker?worker'
 
 const route = useRoute()
 const projectId = computed(() => route.params.projectId)
+
+const dataWorker = new DataWorker()
+
+// Desc data formatted
+const formattedDescData = ref<any[]>([])
+
+// Clean up worker
+onBeforeUnmount(() => {
+  dataWorker.terminate()
+})
+
+dataWorker.onmessage = (e: MessageEvent) => {
+  const { type, payload } = e.data
+  if (type === 'FORMAT_NUMERIC_DESC_RESULT') {
+    formattedDescData.value = payload
+  } else if (type === 'PROCESS_3D_BAR_DATA_RESULT') {
+    const data3D = payload
+    const data = chartCurrentData.value
+    chartOptions.value = {
+      tooltip: {},
+      visualMap: {
+        max: Math.max(...data.y_axis),
+        inRange: { color: ['#313695', '#4575b4', '#74add1', '#abd9e9', '#e0f3f8', '#ffffbf', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'] }
+      },
+      xAxis3D: { type: 'category', data: data.x_axis },
+      yAxis3D: { type: 'category', data: ['Series'] },
+      zAxis3D: { type: 'value' },
+      grid3D: { boxWidth: 200, boxDepth: 20, viewControl: { alpha: 10, beta: 20 } },
+      series: [{
+        type: 'bar3D',
+        data: data3D,
+        shading: 'lambert',
+        label: { show: false, textStyle: { fontSize: 16, borderWidth: 1 } },
+        itemStyle: { opacity: 0.8 },
+        emphasis: { label: { show: true } }
+      }]
+    }
+  }
+}
 
 const datasets = ref<any[]>([])
 const selectedDatasetId = ref<number | null>(null)
@@ -232,11 +272,6 @@ const descNumericColumns = [
   { title: '75%', dataIndex: '75%', key: '75%' },
   { title: '最大值 (max)', dataIndex: 'max', key: 'max' },
 ]
-const formatNumericDesc = (numObj: any) => {
-  return Object.keys(numObj).map(col => {
-    return { col, ...numObj[col] }
-  })
-}
 
 // Correlation
 const corrCols = ref<string[]>([])
@@ -254,6 +289,7 @@ const chartType = ref('bar')
 const chartX = ref<string>('')
 const chartY = ref<string | undefined>(undefined)
 const chartAgg = ref('count')
+const chartCurrentData = ref<any>(null)
 
 const contentTitle = computed(() => {
   const map: any = {
@@ -325,6 +361,9 @@ const fetchDescriptive = async () => {
     const res: any = await request.post(`/api/statistics/${selectedDatasetId.value}/descriptive`, {})
     if (res.success) {
       descData.value = res.data
+      if (res.data.numeric && Object.keys(res.data.numeric).length) {
+        dataWorker.postMessage({ type: 'FORMAT_NUMERIC_DESC', payload: { numObj: res.data.numeric } })
+      }
     }
   } catch (e) {
     message.error('获取描述性统计失败')
@@ -437,27 +476,8 @@ const fetchChartData = async () => {
           series: [{ name: chartY.value || 'Count', type: 'pie', radius: '50%', data: pieData, emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.5)' } } }]
         }
       } else if (chartType.value === 'bar3D') {
-        // Simple 3D Bar map: X is x_axis, Y is just one category, Z is y_axis
-        const data3D = data.x_axis.map((x: string, i: number) => [i, 0, data.y_axis[i]])
-        chartOptions.value = {
-          tooltip: {},
-          visualMap: {
-            max: Math.max(...data.y_axis),
-            inRange: { color: ['#313695', '#4575b4', '#74add1', '#abd9e9', '#e0f3f8', '#ffffbf', '#fee090', '#fdae61', '#f46d43', '#d73027', '#a50026'] }
-          },
-          xAxis3D: { type: 'category', data: data.x_axis },
-          yAxis3D: { type: 'category', data: ['Series'] },
-          zAxis3D: { type: 'value' },
-          grid3D: { boxWidth: 200, boxDepth: 20, viewControl: { alpha: 10, beta: 20 } },
-          series: [{
-            type: 'bar3D',
-            data: data3D,
-            shading: 'lambert',
-            label: { show: false, textStyle: { fontSize: 16, borderWidth: 1 } },
-            itemStyle: { opacity: 0.8 },
-            emphasis: { label: { show: true } }
-          }]
-        }
+        chartCurrentData.value = data
+        dataWorker.postMessage({ type: 'PROCESS_3D_BAR_DATA', payload: { x_axis: data.x_axis, y_axis: data.y_axis } })
       } else {
         chartOptions.value = {
           tooltip: { trigger: 'axis' },

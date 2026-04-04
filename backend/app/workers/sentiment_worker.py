@@ -109,21 +109,21 @@ def run_sentiment_task(
     wordcloud_artifact = None
     if generate_wordcloud and tfidf_result:
         update_progress(90.0, "生成词云图...")
-        text_for_cloud = " ".join([w for w, s in tfidf_result])
+        text_for_cloud = " ".join([item["word"] for item in tfidf_result])
         if text_for_cloud:
             # 必须指定中文字体，否则乱码
             font_path = "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc" # 需要确保系统有中文字体
             if not os.path.exists(font_path):
-                # fallback 
+                # fallback
                 font_path = None
-            
+
             wc = WordCloud(
                 font_path=font_path,
-                width=800, 
-                height=600, 
+                width=800,
+                height=600,
                 background_color="white",
                 max_words=100
-            ).generate_from_frequencies({w: s for w, s in tfidf_result})
+            ).generate_from_frequencies({item["word"]: item["score"] for item in tfidf_result})
             
             artifacts_dir = f"storage/projects/{project_id}/artifacts/charts"
             os.makedirs(artifacts_dir, exist_ok=True)

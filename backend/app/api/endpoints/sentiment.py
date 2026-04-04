@@ -12,7 +12,7 @@ from app.workers.sentiment_worker import run_sentiment_task
 router = APIRouter()
 
 @router.post("/{dataset_id}/analyze", response_model=StandardResponse[str])
-def start_sentiment_analysis(
+async def start_sentiment_analysis(
     dataset_id: int,
     config: Dict[str, Any] = Body(...),
     db: Session = Depends(get_db)
@@ -33,7 +33,7 @@ def start_sentiment_analysis(
     if not dataset or not dataset.file_path or not os.path.exists(dataset.file_path):
         raise HTTPException(status_code=404, detail="数据集或文件不存在")
 
-    task_id = task_manager.submit_task(
+    task_id = await task_manager.submit_task(
         dataset.project_id,
         f"情感分析 - {dataset.name}",
         run_sentiment_task,

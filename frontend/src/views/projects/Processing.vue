@@ -145,16 +145,17 @@
       <a-col :span="18" class="right-panel">
         <a-card title="数据预览" :bordered="false" class="neumorphism-card h-full">
           <div v-if="selectedDatasetId">
-            <a-table
-              :columns="tableColumns"
-              :data-source="tableData"
-              :loading="tableLoading"
-              :pagination="pagination"
-              @change="handleTableChange"
-              bordered
-              size="middle"
-              :scroll="{ x: 'max-content', y: 'calc(100vh - 250px)' }"
-            />
+            <a-skeleton active :loading="tableLoading" :paragraph="{ rows: 10 }">
+              <a-table
+                :columns="tableColumns"
+                :data-source="tableData"
+                :pagination="pagination"
+                @change="handleTableChange"
+                bordered
+                size="middle"
+                :scroll="{ x: 'max-content', y: 'calc(100vh - 250px)' }"
+              />
+            </a-skeleton>
           </div>
           <div v-else class="empty-state">
             <a-empty description="请在左侧选择数据集" />

@@ -61,15 +61,16 @@
         <a-card title="结果展示" :bordered="false" class="neumorphism-card h-full" style="overflow-y: auto;">
           <a-tabs v-model:activeKey="activeTab">
             <a-tab-pane key="data" tab="数据预览">
-              <a-table 
-                :columns="tableColumns" 
-                :data-source="tableData" 
-                :pagination="pagination"
-                :loading="tableLoading"
-                @change="handleTableChange"
-                size="small"
-                :scroll="{ x: 'max-content' }"
-              />
+              <a-skeleton active :loading="tableLoading" :paragraph="{ rows: 10 }">
+                <a-table 
+                  :columns="tableColumns" 
+                  :data-source="tableData" 
+                  :pagination="pagination"
+                  @change="handleTableChange"
+                  size="small"
+                  :scroll="{ x: 'max-content' }"
+                />
+              </a-skeleton>
             </a-tab-pane>
             <a-tab-pane key="chart" tab="情感分布图">
               <div v-if="hasSentimentData" style="height: 400px;">

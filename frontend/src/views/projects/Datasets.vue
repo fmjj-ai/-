@@ -46,33 +46,34 @@
           
           <div v-if="currentDataset.status === 'ready'">
             <a-alert style="margin-bottom: 16px;" message="双击单元格即可进行编辑" type="info" show-icon />
-            <a-table
-              :columns="tableColumns"
-              :data-source="tableData"
-              :loading="tableLoading"
-              :pagination="pagination"
-              @change="handleTableChange"
-              bordered
-              size="middle"
-              :scroll="{ x: 'max-content', y: 500 }"
-            >
-              <template #bodyCell="{ column, record }">
-                <div 
-                  class="editable-cell" 
-                  @dblclick="editCell(record, column.dataIndex)"
-                >
-                  <a-input
-                    v-if="editingCell?.rowKey === record._row_index && editingCell?.colKey === column.dataIndex"
-                    v-model:value="editingValue"
-                    size="small"
-                    @blur="saveCell(record, column.dataIndex)"
-                    @pressEnter="saveCell(record, column.dataIndex)"
-                    auto-focus
-                  />
-                  <span v-else>{{ record[column.dataIndex] }}</span>
-                </div>
-              </template>
-            </a-table>
+            <a-skeleton active :loading="tableLoading" :paragraph="{ rows: 10 }">
+              <a-table
+                :columns="tableColumns"
+                :data-source="tableData"
+                :pagination="pagination"
+                @change="handleTableChange"
+                bordered
+                size="middle"
+                :scroll="{ x: 'max-content', y: 500 }"
+              >
+                <template #bodyCell="{ column, record }">
+                  <div 
+                    class="editable-cell" 
+                    @dblclick="editCell(record, column.dataIndex)"
+                  >
+                    <a-input
+                      v-if="editingCell?.rowKey === record._row_index && editingCell?.colKey === column.dataIndex"
+                      v-model:value="editingValue"
+                      size="small"
+                      @blur="saveCell(record, column.dataIndex)"
+                      @pressEnter="saveCell(record, column.dataIndex)"
+                      auto-focus
+                    />
+                    <span v-else>{{ record[column.dataIndex] }}</span>
+                  </div>
+                </template>
+              </a-table>
+            </a-skeleton>
           </div>
           <div v-else-if="currentDataset.status === 'failed'">
             <a-alert type="error" :message="`导入失败: ${currentDataset.error_message}`" />
