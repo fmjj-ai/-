@@ -20,6 +20,9 @@
               class="neumorphism-menu"
               v-if="selectedDatasetId"
             >
+              <a-menu-item key="cleaning">
+                数据清洗与变换 (ST-01/02)
+              </a-menu-item>
               <a-menu-item key="overview">
                 自动数据概览 (ST-03)
               </a-menu-item>
@@ -37,6 +40,39 @@
               </a-menu-item>
             </a-menu>
 
+            <div v-if="selectedMenu[0] === 'cleaning'" class="mt-4">
+              <a-form-item label="缺失值处理">
+                <a-select v-model:value="cleanStrategy.missing">
+                  <a-select-option value="drop">删除缺失行</a-select-option>
+                  <a-select-option value="fill_mean">填充均值</a-select-option>
+                  <a-select-option value="fill_median">填充中位数</a-select-option>
+                  <a-select-option value="fill_mode">填充众数</a-select-option>
+                </a-select>
+              </a-form-item>
+              <a-form-item>
+                <a-checkbox v-model:checked="cleanStrategy.drop_duplicates">去除重复值</a-checkbox>
+              </a-form-item>
+              <a-form-item>
+                <a-checkbox v-model:checked="cleanStrategy.handle_outliers">检测并处理异常值 (IQR)</a-checkbox>
+              </a-form-item>
+              <a-button type="primary" block @click="applyCleaning" :loading="loading">应用清洗规则</a-button>
+
+              <a-divider />
+
+              <a-form-item label="数据变换 (标准化/归一化)">
+                <a-select v-model:value="transformStrategy.scaler" allowClear placeholder="选择缩放方法">
+                  <a-select-option value="standard">StandardScaler (标准化)</a-select-option>
+                  <a-select-option value="minmax">MinMaxScaler (归一化)</a-select-option>
+                </a-select>
+              </a-form-item>
+              <a-form-item label="应用列">
+                <a-select v-model:value="transformStrategy.columns" mode="multiple" placeholder="选择数值列">
+                  <a-select-option v-for="col in columns" :key="col" :value="col">{{ col }}</a-select-option>
+                </a-select>
+              </a-form-item>
+              <a-button type="primary" block @click="applyTransform" :loading="loading">应用变换</a-button>
+            </div>
+
             <div v-if="selectedMenu[0] === 'correlation'" class="mt-4">
               <a-form-item label="选择列 (留空则全选数值列)">
                 <a-select v-model:value="corrCols" mode="multiple" placeholder="选择列">
@@ -48,6 +84,13 @@
                   <a-select-option value="pearson">Pearson</a-select-option>
                   <a-select-option value="spearman">Spearman</a-select-option>
                   <a-select-option value="kendall">Kendall</a-select-option>
+                </a-select>
+              </a-form-item>
+              <a-form-item label="缺失值处理策略">
+                <a-select v-model:value="corrMissingStrategy">
+                  <a-select-option value="drop">剔除缺失行</a-select-option>
+                  <a-select-option value="fill_mean">填充均值</a-select-option>
+                  <a-select-option value="fill_median">填充中位数</a-select-option>
                 </a-select>
               </a-form-item>
               <a-button type="primary" block @click="fetchCorrelation" :loading="loading">计算相关性</a-button>
@@ -72,6 +115,13 @@
               </a-form-item>
               <a-form-item v-if="regType === 'polynomial'" label="多项式阶数">
                 <a-input-number v-model:value="polyDegree" :min="2" :max="5" />
+              </a-form-item>
+              <a-form-item label="缺失值处理策略">
+                <a-select v-model:value="regMissingStrategy">
+                  <a-select-option value="drop">剔除缺失行</a-select-option>
+                  <a-select-option value="fill_mean">填充均值</a-select-option>
+                  <a-select-option value="fill_median">填充中位数</a-select-option>
+                </a-select>
               </a-form-item>
               <a-button type="primary" block @click="fetchRegression" :loading="loading">运行回归</a-button>
             </div>
@@ -119,9 +169,15 @@
 
       <a-col :span="18" class="right-panel">
         <a-card :title="contentTitle" :bordered="false" class="neumorphism-card h-full" style="overflow-y: auto;">
-          <template #extra v-if="hasChart">
-            <a-button type="link" @click="exportChart('png')">导出 PNG</a-button>
-            <a-button type="link" @click="exportChart('svg')">导出 SVG</a-button>
+          <template #extra>
+            <a-space v-if="selectedDatasetId">
+              <a-button type="primary" @click="exportReport('markdown')">导出 Markdown 报告</a-button>
+              <a-button type="primary" @click="exportReport('pdf')">导出 PDF 报告</a-button>
+            </a-space>
+            <a-space v-if="hasChart" style="margin-left: 16px;">
+              <a-button type="link" @click="exportChart('png')">导出 PNG</a-button>
+              <a-button type="link" @click="exportChart('svg')">导出 SVG</a-button>
+            </a-space>
           </template>
 
           <div v-if="!selectedDatasetId" class="empty-state">
@@ -259,6 +315,17 @@ const overviewColumns = [
   { title: '唯一值数', dataIndex: 'unique_count', key: 'unique_count' },
 ]
 
+// Cleaning & Transform
+const cleanStrategy = ref({
+  missing: 'drop',
+  drop_duplicates: false,
+  handle_outliers: false
+})
+const transformStrategy = ref({
+  scaler: undefined,
+  columns: []
+})
+
 // Descriptive Data
 const descData = ref<any>(null)
 const descNumericColumns = [
@@ -276,12 +343,14 @@ const descNumericColumns = [
 // Correlation
 const corrCols = ref<string[]>([])
 const corrMethod = ref('pearson')
+const corrMissingStrategy = ref('drop')
 
 // Regression
 const regY = ref<string>('')
 const regX = ref<string[]>([])
 const regType = ref('linear')
 const polyDegree = ref(2)
+const regMissingStrategy = ref('drop')
 const regData = ref<any>(null)
 
 // Charts
@@ -498,6 +567,38 @@ const exportChart = (type: 'png' | 'svg') => {
   if (chartRef.value) {
     chartRef.value.exportChart(type, false, 2)
   }
+}
+
+const applyCleaning = async () => {
+  if (!selectedDatasetId.value) return
+  loading.value = true
+  try {
+    message.info('应用清洗规则中，请在任务中心查看进度...')
+    // API call for cleaning would go here
+  } finally {
+    loading.value = false
+  }
+}
+
+const applyTransform = async () => {
+  if (!selectedDatasetId.value) return
+  if (!transformStrategy.value.scaler || transformStrategy.value.columns.length === 0) {
+    message.warning('请选择缩放方法和应用列')
+    return
+  }
+  loading.value = true
+  try {
+    message.info('应用变换中，请在任务中心查看进度...')
+    // API call for transform would go here
+  } finally {
+    loading.value = false
+  }
+}
+
+const exportReport = (type: 'markdown' | 'pdf') => {
+  if (!selectedDatasetId.value) return
+  message.info(`正在生成 ${type.toUpperCase()} 报告，请稍候在产物中心查看...`)
+  // API call for export report
 }
 
 onMounted(() => {

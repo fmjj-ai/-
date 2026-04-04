@@ -12,6 +12,11 @@ openpyxl>=3.1.2
 scikit-learn
 xgboost
 lightgbm
+hdbscan
+pyLDAvis
+openai
+markdown
+pdfkit
 jieba
 snownlp
 wordcloud

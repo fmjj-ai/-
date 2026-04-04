@@ -28,6 +28,7 @@
 
           <template v-if="column.key === 'action'">
             <a-space>
+              <a-button type="link" @click="handlePreview(record)" v-if="canPreview(record.type)">预览</a-button>
               <a-button type="link" @click="handleDownload(record)">下载</a-button>
               <a-popconfirm
                 title="确定要删除该文件吗？"
@@ -42,6 +43,32 @@
         </template>
       </a-table>
     </a-card>
+
+    <!-- Preview Modal -->
+    <a-modal
+      v-model:visible="previewVisible"
+      title="文件预览"
+      width="80%"
+      style="top: 20px"
+      :footer="null"
+      @cancel="closePreview"
+    >
+      <div v-if="previewLoading" style="text-align: center; padding: 50px;">
+        <a-spin size="large" />
+      </div>
+      <div v-else-if="previewType === 'image'" style="text-align: center;">
+        <img :src="previewUrl" style="max-width: 100%; max-height: 70vh;" />
+      </div>
+      <div v-else-if="previewType === 'iframe'" style="height: 70vh;">
+        <iframe :src="previewUrl" width="100%" height="100%" frameborder="0"></iframe>
+      </div>
+      <div v-else-if="previewType === 'text'" style="height: 70vh; overflow: auto; background: var(--bg-color); padding: 16px; border-radius: 4px;">
+        <pre style="white-space: pre-wrap; font-family: monospace; margin: 0;">{{ previewText }}</pre>
+      </div>
+      <div v-else style="text-align: center; padding: 50px;">
+        <p>该文件类型暂不支持预览，请下载后查看。</p>
+      </div>
+    </a-modal>
   </div>
 </template>
 
@@ -56,6 +83,12 @@ const projectId = route.params.projectId as string;
 
 const loading = ref(false);
 const artifacts = ref<any[]>([]);
+
+const previewVisible = ref(false);
+const previewLoading = ref(false);
+const previewType = ref('');
+const previewUrl = ref('');
+const previewText = ref('');
 
 const columns = [
   {
@@ -82,7 +115,7 @@ const columns = [
   {
     title: '操作',
     key: 'action',
-    width: 150,
+    width: 200,
   }
 ];
 
@@ -103,6 +136,49 @@ const fetchArtifacts = async () => {
 onMounted(() => {
   fetchArtifacts();
 });
+
+const canPreview = (type: string) => {
+  const t = type.toLowerCase();
+  return ['markdown', 'md', 'pdf', 'html', 'png', 'svg', 'jpg', 'jpeg', 'txt', 'json', 'csv'].includes(t);
+};
+
+const handlePreview = async (record: any) => {
+  const t = record.type.toLowerCase();
+  const baseURL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
+  const url = `${baseURL}/artifacts/${record.id}/download`;
+  
+  previewVisible.value = true;
+  previewLoading.value = true;
+  previewUrl.value = url;
+  
+  if (['png', 'svg', 'jpg', 'jpeg'].includes(t)) {
+    previewType.value = 'image';
+    previewLoading.value = false;
+  } else if (['pdf', 'html'].includes(t)) {
+    previewType.value = 'iframe';
+    previewLoading.value = false;
+  } else if (['markdown', 'md', 'txt', 'json', 'csv'].includes(t)) {
+    previewType.value = 'text';
+    try {
+      const response = await fetch(url);
+      const text = await response.text();
+      previewText.value = text;
+    } catch (e) {
+      previewText.value = '预览加载失败';
+    } finally {
+      previewLoading.value = false;
+    }
+  } else {
+    previewType.value = 'unsupported';
+    previewLoading.value = false;
+  }
+};
+
+const closePreview = () => {
+  previewVisible.value = false;
+  previewUrl.value = '';
+  previewText.value = '';
+};
 
 const handleDownload = (record: any) => {
   // Use window.open or create an anchor to download

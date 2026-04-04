@@ -283,3 +283,103 @@ def get_chart_aggregation(
         return StandardResponse(success=True, data=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"聚合计算失败: {str(e)}")
+
+import markdown
+import pdfkit
+import uuid
+
+@router.post("/{dataset_id}/report", response_model=StandardResponse[Dict[str, Any]])
+def generate_report(
+    dataset_id: int,
+    report_type: str = Body("markdown", embed=True), # markdown, pdf
+    title: str = Body("数据分析报告", embed=True),
+    content_blocks: List[Dict[str, Any]] = Body(..., embed=True),
+    db: Session = Depends(get_db)
+):
+    """
+    生成 Markdown / PDF 报告
+    content_blocks 结构:
+    [
+        {"type": "text", "content": "这里是描述..."},
+        {"type": "table", "title": "数据概览", "data": {"key": "value"}},
+        {"type": "chart", "title": "柱状图", "image_url": "..."}
+    ]
+    """
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+        
+    try:
+        md_content = f"# {title}\n\n"
+        
+        for block in content_blocks:
+            b_type = block.get("type")
+            if b_type == "text":
+                md_content += f"{block.get('content', '')}\n\n"
+            elif b_type == "table":
+                md_content += f"## {block.get('title', '表格')}\n\n"
+                data = block.get("data", {})
+                if isinstance(data, dict):
+                    md_content += "| 属性 | 值 |\n| --- | --- |\n"
+                    for k, v in data.items():
+                        md_content += f"| {k} | {v} |\n"
+                md_content += "\n"
+            elif b_type == "chart":
+                md_content += f"## {block.get('title', '图表')}\n\n"
+                img_url = block.get("image_url", "")
+                md_content += f"![{block.get('title', '')}]({img_url})\n\n"
+                
+        artifacts_dir = f"storage/projects/{dataset.project_id}/artifacts/reports"
+        os.makedirs(artifacts_dir, exist_ok=True)
+        
+        report_id = str(uuid.uuid4())
+        
+        if report_type == "markdown":
+            file_path = os.path.join(artifacts_dir, f"report_{report_id}.md")
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(md_content)
+            return StandardResponse(success=True, data={"file_path": file_path, "type": "markdown"})
+            
+        elif report_type == "pdf":
+            html_content = markdown.markdown(md_content, extensions=['tables'])
+            html_doc = f'''
+            <html>
+            <head>
+                <meta charset="utf-8">
+                <style>
+                    body {{ font-family: "Microsoft YaHei", "SimHei", sans-serif; padding: 20px; }}
+                    table {{ border-collapse: collapse; width: 100%; }}
+                    th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+                    th {{ background-color: #f2f2f2; }}
+                    img {{ max-width: 100%; }}
+                </style>
+            </head>
+            <body>
+                {html_content}
+            </body>
+            </html>
+            '''
+            
+            pdf_path = os.path.join(artifacts_dir, f"report_{report_id}.pdf")
+            try:
+                options = {
+                    'enable-local-file-access': None,
+                    'encoding': "UTF-8",
+                }
+                pdfkit.from_string(html_doc, pdf_path, options=options)
+                return StandardResponse(success=True, data={"file_path": pdf_path, "type": "pdf"})
+            except Exception as pdf_e:
+                # wkhtmltopdf missing fallback
+                html_path = os.path.join(artifacts_dir, f"report_{report_id}.html")
+                with open(html_path, "w", encoding="utf-8") as f:
+                    f.write(html_doc)
+                return StandardResponse(success=True, data={
+                    "file_path": html_path, 
+                    "type": "html",
+                    "message": "PDF 生成失败（可能缺少 wkhtmltopdf），已降级为 HTML 报告"
+                })
+        else:
+            raise ValueError(f"不支持的报告类型: {report_type}")
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"报告生成失败: {str(e)}")

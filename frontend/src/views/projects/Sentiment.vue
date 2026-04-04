@@ -22,15 +22,34 @@
               </a-form-item>
 
               <a-form-item label="分析模型">
-                <a-select v-model:value="config.method">
+                <a-select v-model:value="config.method" @change="handleMethodChange">
                   <a-select-option value="snownlp">SnowNLP (内置本地)</a-select-option>
-                  <a-select-option value="deepseek" disabled>DeepSeek API (即将支持)</a-select-option>
+                  <a-select-option value="deepseek">DeepSeek API</a-select-option>
                 </a-select>
+                <a-alert v-if="config.method === 'deepseek'" type="warning" show-icon style="margin-top: 8px;">
+                  <template #message>
+                    提示：使用 DeepSeek API 可能产生费用，并存在数据外发风险。
+                  </template>
+                </a-alert>
               </a-form-item>
 
-              <a-form-item label="自定义停用词 (逗号分隔)">
+              <a-form-item label="自定义停用词 (逗号分隔或换行)">
                 <a-textarea v-model:value="customStopwords" placeholder="例如：的,了,呢,啊" :rows="2" />
+                <div style="margin-top: 8px;">
+                  <a-upload accept=".txt" :before-upload="handleStopwordsUpload" :show-upload-list="false">
+                    <a-button size="small">上传停用词表 (.txt)</a-button>
+                  </a-upload>
+                </div>
               </a-form-item>
+
+              <a-form-item>
+                <a-checkbox v-model:checked="config.export_high_conf">沉淀高置信度语料库</a-checkbox>
+              </a-form-item>
+              <a-form-item v-if="config.export_high_conf" label="置信度阈值">
+                <a-slider v-model:value="config.high_conf_threshold" :min="0.5" :max="1.0" :step="0.05" />
+              </a-form-item>
+
+              <a-divider />
 
               <a-form-item>
                 <a-checkbox v-model:checked="config.extract_tfidf">提取 TF-IDF 关键词</a-checkbox>
@@ -40,9 +59,62 @@
                 <a-input-number v-model:value="config.top_k" :min="5" :max="100" />
               </a-form-item>
 
+              <a-divider />
+
               <a-form-item>
-                <a-checkbox v-model:checked="config.generate_wordcloud" :disabled="!config.extract_tfidf">生成词云图导出</a-checkbox>
+                <a-checkbox v-model:checked="config.run_lda">执行 LDA 主题提取</a-checkbox>
               </a-form-item>
+              <template v-if="config.run_lda">
+                <a-form-item label="先计算困惑度范围">
+                  <a-row :gutter="8">
+                    <a-col :span="10">
+                      <a-input-number v-model:value="config.lda_min_k" :min="2" placeholder="最小主题数" style="width: 100%" />
+                    </a-col>
+                    <a-col :span="4" style="text-align: center;">-</a-col>
+                    <a-col :span="10">
+                      <a-input-number v-model:value="config.lda_max_k" :min="config.lda_min_k + 1" placeholder="最大主题数" style="width: 100%" />
+                    </a-col>
+                  </a-row>
+                  <a-button size="small" style="margin-top: 8px;" @click="calculatePerplexity">生成困惑度曲线</a-button>
+                </a-form-item>
+                <a-form-item label="最终选择主题数 (K)">
+                  <a-input-number v-model:value="config.lda_k" :min="2" :max="50" style="width: 100%" />
+                </a-form-item>
+              </template>
+
+              <a-divider />
+
+              <a-form-item>
+                <a-checkbox v-model:checked="config.generate_wordcloud" :disabled="!config.extract_tfidf">生成高级词云图</a-checkbox>
+              </a-form-item>
+              
+              <template v-if="config.generate_wordcloud">
+                <a-form-item label="词云主题色卡">
+                  <a-select v-model:value="config.wc_colormap">
+                    <a-select-option value="viridis">Viridis</a-select-option>
+                    <a-select-option value="plasma">Plasma</a-select-option>
+                    <a-select-option value="magma">Magma</a-select-option>
+                    <a-select-option value="coolwarm">Coolwarm</a-select-option>
+                  </a-select>
+                </a-form-item>
+                <a-form-item label="字体">
+                  <a-select v-model:value="config.wc_font">
+                    <a-select-option value="SimHei">黑体</a-select-option>
+                    <a-select-option value="SimSun">宋体</a-select-option>
+                    <a-select-option value="Microsoft YaHei">微软雅黑</a-select-option>
+                  </a-select>
+                </a-form-item>
+                <a-form-item>
+                  <a-checkbox v-model:checked="config.wc_contour">启用轮廓描边</a-checkbox>
+                </a-form-item>
+                <a-form-item label="自定义轮廓图 (Mask)">
+                  <a-upload accept="image/*" :before-upload="handleMaskUpload" :show-upload-list="true" :max-count="1">
+                    <a-button size="small">上传黑白轮廓图</a-button>
+                  </a-upload>
+                </a-form-item>
+              </template>
+
+              <a-divider />
 
               <a-button type="primary" block @click="startAnalysis" :loading="submitting">
                 开始分析
@@ -108,10 +180,20 @@ const columns = ref<string[]>([])
 const config = ref({
   text_column: '',
   method: 'snownlp',
-  stopwords: [],
+  stopwords: [] as string[],
+  export_high_conf: false,
+  high_conf_threshold: 0.8,
   extract_tfidf: true,
   top_k: 20,
-  generate_wordcloud: true
+  run_lda: false,
+  lda_min_k: 2,
+  lda_max_k: 10,
+  lda_k: 5,
+  generate_wordcloud: true,
+  wc_colormap: 'viridis',
+  wc_font: 'SimHei',
+  wc_contour: false,
+  wc_mask_file: null as File | null
 })
 const customStopwords = ref('')
 const submitting = ref(false)
@@ -133,6 +215,40 @@ const pagination = ref({
 const hasSentimentData = ref(false)
 const sentimentChartOptions = ref<any>({})
 const latestWordcloudUrl = ref<string | null>(null)
+
+const handleMethodChange = (val: string) => {
+  // Method change hook
+}
+
+const handleStopwordsUpload = (file: File) => {
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    const text = e.target?.result as string
+    if (text) {
+      const words = text.split(/[\r\n,]+/).map(w => w.trim()).filter(w => w)
+      const currentWords = customStopwords.value ? customStopwords.value.split(/[\r\n,]+/).map(w => w.trim()).filter(w => w) : []
+      const merged = Array.from(new Set([...currentWords, ...words]))
+      customStopwords.value = merged.join(',')
+      message.success(`成功导入 ${words.length} 个停用词`)
+    }
+  }
+  reader.readAsText(file)
+  return false // prevent default upload
+}
+
+const handleMaskUpload = (file: File) => {
+  config.value.wc_mask_file = file
+  return false
+}
+
+const calculatePerplexity = async () => {
+  if (!selectedDatasetId.value || !config.value.text_column) {
+    message.warning('请选择数据集和文本列')
+    return
+  }
+  message.info('开始计算困惑度，请在任务中心查看进度...')
+  // API call would go here
+}
 
 const fetchDatasets = async () => {
   try {
