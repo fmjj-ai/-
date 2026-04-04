@@ -5,7 +5,6 @@
     placement="right"
     :width="400"
     :closable="true"
-    @close="taskStore.toggleTaskCenter()"
   >
     <div v-if="taskStore.tasks.length === 0" class="empty-state">
       <a-empty description="暂无任务记录" />
