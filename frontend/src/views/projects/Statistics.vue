@@ -377,7 +377,7 @@ const hasChart = computed(() => {
 
 const fetchDatasets = async () => {
   try {
-    const res: any = await request.get(`/api/datasets/project/${projectId.value}`)
+    const res: any = await request.get(`/datasets/project/${projectId.value}`)
     if (res.success) {
       datasets.value = res.data.filter((d: any) => d.status === 'ready')
     }
@@ -413,7 +413,7 @@ const fetchCurrentMenuData = async () => {
 const fetchOverview = async () => {
   loading.value = true
   try {
-    const res: any = await request.get(`/api/statistics/${selectedDatasetId.value}/overview`)
+    const res: any = await request.get(`/statistics/${selectedDatasetId.value}/overview`)
     if (res.success) {
       overviewData.value = res.data
     }
@@ -427,7 +427,7 @@ const fetchOverview = async () => {
 const fetchDescriptive = async () => {
   loading.value = true
   try {
-    const res: any = await request.post(`/api/statistics/${selectedDatasetId.value}/descriptive`, {})
+    const res: any = await request.post(`/statistics/${selectedDatasetId.value}/descriptive`, {})
     if (res.success) {
       descData.value = res.data
       if (res.data.numeric && Object.keys(res.data.numeric).length) {
@@ -445,7 +445,7 @@ const fetchCorrelation = async () => {
   if (!selectedDatasetId.value) return
   loading.value = true
   try {
-    const res: any = await request.post(`/api/statistics/${selectedDatasetId.value}/correlation`, {
+    const res: any = await request.post(`/statistics/${selectedDatasetId.value}/correlation`, {
       columns: corrCols.value.length > 0 ? corrCols.value : null,
       method: corrMethod.value
     })
@@ -481,7 +481,7 @@ const fetchRegression = async () => {
   }
   loading.value = true
   try {
-    const res: any = await request.post(`/api/statistics/${selectedDatasetId.value}/regression`, {
+    const res: any = await request.post(`/statistics/${selectedDatasetId.value}/regression`, {
       y_col: regY.value,
       x_cols: regX.value,
       reg_type: regType.value,
@@ -529,7 +529,7 @@ const fetchChartData = async () => {
   }
   loading.value = true
   try {
-    const res: any = await request.post(`/api/statistics/${selectedDatasetId.value}/aggregation`, {
+    const res: any = await request.post(`/statistics/${selectedDatasetId.value}/aggregation`, {
       x_col: chartX.value,
       y_col: chartY.value || null,
       agg_method: chartAgg.value,

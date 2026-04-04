@@ -82,7 +82,7 @@ const columns = [
 const fetchProjects = async () => {
   loading.value = true
   try {
-    const res: any = await request.get('/api/projects/', { params: { include_archived: true } })
+    const res: any = await request.get('/projects/', { params: { include_archived: true } })
     if (res.success) {
       projects.value = res.data
     }
@@ -135,7 +135,7 @@ const handleModalOk = async () => {
     await formRef.value.validate()
     submitLoading.value = true
     if (isEdit.value) {
-      const res: any = await request.put(`/api/projects/${form.value.id}`, {
+      const res: any = await request.put(`/projects/${form.value.id}`, {
         name: form.value.name,
         description: form.value.description,
         is_archived: form.value.is_archived
@@ -146,7 +146,7 @@ const handleModalOk = async () => {
         fetchProjects()
       }
     } else {
-      const res: any = await request.post('/api/projects/', {
+      const res: any = await request.post('/projects/', {
         name: form.value.name,
         description: form.value.description,
         is_archived: false
@@ -166,7 +166,7 @@ const handleModalOk = async () => {
 
 const deleteProject = async (id: number) => {
   try {
-    const res: any = await request.delete(`/api/projects/${id}`)
+    const res: any = await request.delete(`/projects/${id}`)
     if (res.success) {
       message.success('删除成功')
       fetchProjects()

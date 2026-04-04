@@ -1,0 +1,6 @@
+setup.py
+gensim/__init__.py
+gensim.egg-info/PKG-INFO
+gensim.egg-info/SOURCES.txt
+gensim.egg-info/dependency_links.txt
+gensim.egg-info/top_level.txt

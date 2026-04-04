@@ -252,7 +252,7 @@ const calculatePerplexity = async () => {
 
 const fetchDatasets = async () => {
   try {
-    const res = await request.get(`/api/datasets/?project_id=${projectId.value}`)
+    const res = await request.get(`/datasets/?project_id=${projectId.value}`)
     if (res.data?.success) {
       datasets.value = res.data.data
     }
@@ -274,7 +274,7 @@ const loadDatasetData = async (page: number, pageSize: number) => {
   if (!selectedDatasetId.value) return
   tableLoading.value = true
   try {
-    const res = await request.get(`/api/datasets/${selectedDatasetId.value}/data`, {
+    const res = await request.get(`/datasets/${selectedDatasetId.value}/data`, {
       params: { page, page_size: pageSize }
     })
     if (res.data?.success) {
@@ -329,7 +329,7 @@ const startAnalysis = async () => {
 
   submitting.value = true
   try {
-    const res = await request.post(`/api/sentiment/${selectedDatasetId.value}/analyze`, payload)
+    const res = await request.post(`/sentiment/${selectedDatasetId.value}/analyze`, payload)
     if (res.data?.success) {
       message.success('情感分析任务已提交，请在全局任务中心查看进度')
     } else {
@@ -352,7 +352,7 @@ const loadAnalysisResults = async () => {
     hasSentimentData.value = true
     // Fetch stats for chart (we can use the statistics endpoint or just calculate from a small sample, but ideally we use statistics endpoint)
     try {
-      const statRes = await request.post(`/api/statistics/${selectedDatasetId.value}/descriptive`, {
+      const statRes = await request.post(`/statistics/${selectedDatasetId.value}/descriptive`, {
         columns: ['sentiment_label']
       })
       if (statRes.data?.success) {
@@ -383,7 +383,7 @@ const loadAnalysisResults = async () => {
 
   // Load artifacts for wordcloud
   try {
-    const artRes = await request.get(`/api/artifacts/?project_id=${projectId.value}`)
+    const artRes = await request.get(`/artifacts/?project_id=${projectId.value}`)
     if (artRes.data?.success) {
       const artifacts = artRes.data.data
       const wordclouds = artifacts.filter((a: any) => a.name.startsWith('词云图_') && a.type === 'png')

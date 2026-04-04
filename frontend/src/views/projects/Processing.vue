@@ -346,7 +346,7 @@ const mlOp = ref<any>({
 
 const fetchDatasets = async () => {
   try {
-    const res: any = await request.get(`/api/datasets/project/${projectId.value}`)
+    const res: any = await request.get(`/datasets/project/${projectId.value}`)
     if (res.success) {
       datasets.value = res.data.filter((d: any) => d.status === 'ready')
     }
@@ -381,7 +381,7 @@ const fetchTableData = async () => {
   
   tableLoading.value = true
   try {
-    const res: any = await request.get(`/api/datasets/${selectedDatasetId.value}/data`, {
+    const res: any = await request.get(`/datasets/${selectedDatasetId.value}/data`, {
       params: {
         page: pagination.value.current,
         size: pagination.value.pageSize
@@ -409,11 +409,11 @@ const executeOperation = async (operation: any) => {
   
   processing.value = true
   try {
-    const res: any = await request.post(`/api/processing/${selectedDatasetId.value}/process`, [operation])
+    const res: any = await request.post(`/processing/${selectedDatasetId.value}/process`, [operation])
     if (res.success) {
       message.success('操作成功')
       // Refetch dataset schema
-      const dsRes: any = await request.get(`/api/datasets/${selectedDatasetId.value}`)
+      const dsRes: any = await request.get(`/datasets/${selectedDatasetId.value}`)
       if (dsRes.success) {
         currentDataset.value = dsRes.data
         updateColumnsList()
