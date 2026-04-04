@@ -130,7 +130,7 @@ const pagination = ref({
 const fetchDatasets = async () => {
   datasetsLoading.value = true
   try {
-    const res: any = await request.get(`/api/datasets/project/${projectId.value}`)
+    const res: any = await request.get(`/datasets/project/${projectId.value}`)
     if (res.success) {
       datasets.value = res.data
       if (currentDataset.value) {
@@ -159,7 +159,7 @@ const customUpload = async (options: any) => {
 
   uploading.value = true
   try {
-    const res: any = await request.post('/api/datasets/upload', formData, {
+    const res: any = await request.post('/datasets/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     if (res.success) {
@@ -179,7 +179,7 @@ const customUpload = async (options: any) => {
 
 const deleteDataset = async (id: number) => {
   try {
-    const res: any = await request.delete(`/api/datasets/${id}`)
+    const res: any = await request.delete(`/datasets/${id}`)
     if (res.success) {
       message.success('删除成功')
       if (currentDataset.value?.id === id) {
@@ -220,7 +220,7 @@ const fetchTableData = async () => {
   
   tableLoading.value = true
   try {
-    const res: any = await request.get(`/api/datasets/${currentDataset.value.id}/data`, {
+    const res: any = await request.get(`/datasets/${currentDataset.value.id}/data`, {
       params: {
         page: pagination.value.current,
         size: pagination.value.pageSize
@@ -258,7 +258,7 @@ const saveCell = async (record: any, colKey: string) => {
   if (editingValue.value !== originalValue) {
     // Update backend
     try {
-      const res: any = await request.put(`/api/datasets/${currentDataset.value.id}/data`, {
+      const res: any = await request.put(`/datasets/${currentDataset.value.id}/data`, {
         row_index: record._row_index,
         updates: { [colKey]: editingValue.value }
       })
@@ -289,7 +289,7 @@ const snapshotColumns = [
 const createSnapshot = async () => {
   snapshotLoading.value = true
   try {
-    const res: any = await request.post(`/api/datasets/${currentDataset.value.id}/snapshot`)
+    const res: any = await request.post(`/datasets/${currentDataset.value.id}/snapshot`)
     if (res.success) {
       message.success('快照创建成功')
     }
@@ -304,7 +304,7 @@ const showSnapshots = async () => {
   snapshotsVisible.value = true
   snapshotsLoading.value = true
   try {
-    const res: any = await request.get(`/api/datasets/${currentDataset.value.id}/snapshots`)
+    const res: any = await request.get(`/datasets/${currentDataset.value.id}/snapshots`)
     if (res.success) {
       snapshots.value = res.data
     }

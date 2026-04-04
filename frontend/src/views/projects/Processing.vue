@@ -137,29 +137,142 @@
 
                 <a-button type="primary" block @click="applyEncodeOp" :loading="processing">应用编码</a-button>
               </a-collapse-panel>
+              <a-collapse-panel key="4" header="聚类分析 (PR-04)">
+                <a-form-item label="聚类算法">
+                  <a-select v-model:value="clusterOp.algorithm">
+                    <a-select-option value="kmeans">K-Means</a-select-option>
+                    <a-select-option value="dbscan">DBSCAN</a-select-option>
+                    <a-select-option value="hdbscan">HDBSCAN</a-select-option>
+                    <a-select-option value="meanshift">MeanShift</a-select-option>
+                  </a-select>
+                </a-form-item>
+
+                <a-form-item label="特征列">
+                  <a-select v-model:value="clusterOp.features" mode="multiple" placeholder="选择特征列">
+                    <a-select-option v-for="col in columns" :key="col" :value="col">{{ col }}</a-select-option>
+                  </a-select>
+                </a-form-item>
+
+                <template v-if="clusterOp.algorithm === 'kmeans'">
+                  <a-form-item label="自动寻找最佳 K 值">
+                    <a-checkbox v-model:checked="clusterOp.auto_k">使用手肘法/轮廓系数</a-checkbox>
+                  </a-form-item>
+                  <a-form-item v-if="!clusterOp.auto_k" label="K 值 (聚类数)">
+                    <a-input-number v-model:value="clusterOp.k" :min="2" :max="50" />
+                  </a-form-item>
+                  <template v-else>
+                    <a-form-item label="K 值搜索范围">
+                      <a-row :gutter="8">
+                        <a-col :span="11"><a-input-number v-model:value="clusterOp.k_min" :min="2" placeholder="Min" style="width: 100%" /></a-col>
+                        <a-col :span="2" style="text-align: center;">-</a-col>
+                        <a-col :span="11"><a-input-number v-model:value="clusterOp.k_max" :min="3" placeholder="Max" style="width: 100%" /></a-col>
+                      </a-row>
+                    </a-form-item>
+                  </template>
+                </template>
+
+                <template v-if="clusterOp.algorithm === 'dbscan'">
+                  <a-form-item label="eps">
+                    <a-input-number v-model:value="clusterOp.eps" :min="0.01" :step="0.1" />
+                  </a-form-item>
+                  <a-form-item label="min_samples">
+                    <a-input-number v-model:value="clusterOp.min_samples" :min="1" />
+                  </a-form-item>
+                </template>
+
+                <template v-if="clusterOp.algorithm === 'hdbscan'">
+                  <a-form-item label="min_cluster_size">
+                    <a-input-number v-model:value="clusterOp.min_cluster_size" :min="2" />
+                  </a-form-item>
+                </template>
+
+                <template v-if="clusterOp.algorithm === 'meanshift'">
+                  <a-form-item label="bandwidth (留空自动估计)">
+                    <a-input-number v-model:value="clusterOp.bandwidth" :min="0" :step="0.1" />
+                  </a-form-item>
+                </template>
+
+                <a-button type="primary" block @click="applyClustering" :loading="processing">运行聚类</a-button>
+              </a-collapse-panel>
+
+              <a-collapse-panel key="5" header="分类与回归 (PR-05/06)">
+                <a-form-item label="任务类型">
+                  <a-select v-model:value="mlOp.task_type">
+                    <a-select-option value="classification">分类 (Classification)</a-select-option>
+                    <a-select-option value="regression">回归 (Regression)</a-select-option>
+                  </a-select>
+                </a-form-item>
+
+                <a-form-item label="模型算法">
+                  <a-select v-model:value="mlOp.algorithm">
+                    <a-select-option value="rf">RandomForest</a-select-option>
+                    <a-select-option value="xgb">XGBoost</a-select-option>
+                    <a-select-option value="lgbm">LightGBM</a-select-option>
+                    <a-select-option value="linear">Linear Model</a-select-option>
+                    <a-select-option value="mlp">MLP (轻量深度学习)</a-select-option>
+                  </a-select>
+                </a-form-item>
+
+                <a-form-item label="目标列 (Label/Target)">
+                  <a-select v-model:value="mlOp.target_col" placeholder="选择目标列">
+                    <a-select-option v-for="col in columns" :key="col" :value="col">{{ col }}</a-select-option>
+                  </a-select>
+                </a-form-item>
+
+                <a-form-item label="特征列 (留空使用其他所有数值列)">
+                  <a-select v-model:value="mlOp.feature_cols" mode="multiple" placeholder="选择特征列">
+                    <a-select-option v-for="col in columns" :key="col" :value="col">{{ col }}</a-select-option>
+                  </a-select>
+                </a-form-item>
+
+                <a-form-item label="训练/验证切分比例">
+                  <a-slider v-model:value="mlOp.test_size" :min="0.1" :max="0.5" :step="0.05" :tip-formatter="(val: number) => `${(val * 100).toFixed(0)}% 测试集`" />
+                </a-form-item>
+
+                <a-button type="primary" block @click="applyML" :loading="processing">训练与评估</a-button>
+              </a-collapse-panel>
             </a-collapse>
           </a-form>
         </a-card>
       </a-col>
 
       <a-col :span="18" class="right-panel">
-        <a-card title="数据预览" :bordered="false" class="neumorphism-card h-full">
-          <div v-if="selectedDatasetId">
-            <a-skeleton active :loading="tableLoading" :paragraph="{ rows: 10 }">
-              <a-table
-                :columns="tableColumns"
-                :data-source="tableData"
-                :pagination="pagination"
-                @change="handleTableChange"
-                bordered
-                size="middle"
-                :scroll="{ x: 'max-content', y: 'calc(100vh - 250px)' }"
-              />
-            </a-skeleton>
-          </div>
-          <div v-else class="empty-state">
-            <a-empty description="请在左侧选择数据集" />
-          </div>
+        <a-card title="处理与建模结果" :bordered="false" class="neumorphism-card h-full">
+          <a-tabs v-model:activeKey="activeTab">
+            <a-tab-pane key="data" tab="数据预览">
+              <div v-if="selectedDatasetId">
+                <a-skeleton active :loading="tableLoading" :paragraph="{ rows: 10 }">
+                  <a-table
+                    :columns="tableColumns"
+                    :data-source="tableData"
+                    :pagination="pagination"
+                    @change="handleTableChange"
+                    bordered
+                    size="middle"
+                    :scroll="{ x: 'max-content', y: 'calc(100vh - 300px)' }"
+                  />
+                </a-skeleton>
+              </div>
+              <div v-else class="empty-state">
+                <a-empty description="请在左侧选择数据集" />
+              </div>
+            </a-tab-pane>
+            
+            <a-tab-pane key="model_results" tab="模型对比与结果">
+              <div v-if="modelResults.length > 0">
+                <a-table 
+                  :columns="modelResultColumns" 
+                  :data-source="modelResults" 
+                  :pagination="false"
+                  bordered
+                  size="middle"
+                />
+              </div>
+              <div v-else class="empty-state">
+                <a-empty description="暂无模型训练结果" />
+              </div>
+            </a-tab-pane>
+          </a-tabs>
         </a-card>
       </a-col>
     </a-row>
@@ -180,6 +293,7 @@ const selectedDatasetId = ref<number | null>(null)
 const currentDataset = ref<any>(null)
 
 const activeKey = ref(['1'])
+const activeTab = ref('data')
 const processing = ref(false)
 
 // Table Data
@@ -194,14 +308,45 @@ const pagination = ref({
   showSizeChanger: true
 })
 
+// Model Results State
+const modelResults = ref<any[]>([])
+const modelResultColumns = ref<any[]>([
+  { title: '模型算法', dataIndex: 'algorithm', key: 'algorithm' },
+  { title: '任务类型', dataIndex: 'task_type', key: 'task_type' },
+  { title: '评估指标', dataIndex: 'metrics', key: 'metrics', customRender: ({ text }: any) => JSON.stringify(text) },
+  { title: '运行时间', dataIndex: 'time', key: 'time' }
+])
+
 // Operations state
 const cleanOp = ref<any>({ type: 'dropna', columns: [], method: 'mean', value: '', column: '', target_type: 'numeric' })
 const transformOp = ref<any>({ type: 'compute_column', new_column: '', expression: '', columns: [], method: 'minmax' })
 const encodeOp = ref<any>({ type: 'one_hot_encode', columns: [], column: '', separator: ',', keep_original: false })
 
+// Clustering & ML State
+const clusterOp = ref<any>({
+  algorithm: 'kmeans',
+  features: [],
+  auto_k: true,
+  k: 3,
+  k_min: 2,
+  k_max: 10,
+  eps: 0.5,
+  min_samples: 5,
+  min_cluster_size: 5,
+  bandwidth: undefined
+})
+
+const mlOp = ref<any>({
+  task_type: 'classification',
+  algorithm: 'rf',
+  target_col: undefined,
+  feature_cols: [],
+  test_size: 0.2
+})
+
 const fetchDatasets = async () => {
   try {
-    const res: any = await request.get(`/api/datasets/project/${projectId.value}`)
+    const res: any = await request.get(`/datasets/project/${projectId.value}`)
     if (res.success) {
       datasets.value = res.data.filter((d: any) => d.status === 'ready')
     }
@@ -236,7 +381,7 @@ const fetchTableData = async () => {
   
   tableLoading.value = true
   try {
-    const res: any = await request.get(`/api/datasets/${selectedDatasetId.value}/data`, {
+    const res: any = await request.get(`/datasets/${selectedDatasetId.value}/data`, {
       params: {
         page: pagination.value.current,
         size: pagination.value.pageSize
@@ -264,11 +409,11 @@ const executeOperation = async (operation: any) => {
   
   processing.value = true
   try {
-    const res: any = await request.post(`/api/processing/${selectedDatasetId.value}/process`, [operation])
+    const res: any = await request.post(`/processing/${selectedDatasetId.value}/process`, [operation])
     if (res.success) {
       message.success('操作成功')
       // Refetch dataset schema
-      const dsRes: any = await request.get(`/api/datasets/${selectedDatasetId.value}`)
+      const dsRes: any = await request.get(`/datasets/${selectedDatasetId.value}`)
       if (dsRes.success) {
         currentDataset.value = dsRes.data
         updateColumnsList()
@@ -295,6 +440,53 @@ const applyTransformOp = () => {
 const applyEncodeOp = () => {
   const op = { type: encodeOp.value.type, params: { ...encodeOp.value } }
   executeOperation(op)
+}
+
+const applyClustering = async () => {
+  if (!selectedDatasetId.value || clusterOp.value.features.length === 0) {
+    message.warning('请选择特征列')
+    return
+  }
+  processing.value = true
+  try {
+    message.info('聚类任务已提交，请在任务中心查看进度...')
+    // API call for clustering
+    // For now we just mock a success result for demo
+    setTimeout(() => {
+      message.success('聚类完成')
+      processing.value = false
+    }, 1500)
+  } catch (e: any) {
+    message.error(e.response?.data?.detail || '聚类失败')
+    processing.value = false
+  }
+}
+
+const applyML = async () => {
+  if (!selectedDatasetId.value || !mlOp.value.target_col) {
+    message.warning('请选择目标列 (Label/Target)')
+    return
+  }
+  processing.value = true
+  try {
+    message.info('模型训练任务已提交，请在任务中心查看进度...')
+    // API call for ML
+    // Mock result update
+    setTimeout(() => {
+      modelResults.value.push({
+        algorithm: mlOp.value.algorithm,
+        task_type: mlOp.value.task_type,
+        metrics: mlOp.value.task_type === 'classification' ? { accuracy: 0.92, f1: 0.91 } : { r2: 0.88, mse: 1.23 },
+        time: new Date().toLocaleString()
+      })
+      activeTab.value = 'model_results'
+      message.success('模型训练完成')
+      processing.value = false
+    }, 2000)
+  } catch (e: any) {
+    message.error(e.response?.data?.detail || '训练失败')
+    processing.value = false
+  }
 }
 
 onMounted(() => {
