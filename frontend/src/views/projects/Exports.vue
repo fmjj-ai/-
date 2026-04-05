@@ -145,7 +145,7 @@ const canPreview = (type: string) => {
 const handlePreview = async (record: any) => {
   const t = record.type.toLowerCase();
   const baseURL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
-  const url = `${baseURL}/artifacts/${record.id}/download`;
+  const url = `${baseURL}/artifacts/${record.id}/preview`;
   
   previewVisible.value = true;
   previewLoading.value = true;
