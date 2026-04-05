@@ -180,11 +180,60 @@ const closePreview = () => {
   previewText.value = '';
 };
 
-const handleDownload = (record: any) => {
-  // Use window.open or create an anchor to download
+const getFileExtension = (record: any) => {
+  const fromPath = String(record?.file_path || '').split(/[\\/]/).pop() || '';
+  const dotIndex = fromPath.lastIndexOf('.');
+  if (dotIndex > -1 && dotIndex < fromPath.length - 1) {
+    return fromPath.slice(dotIndex).toLowerCase();
+  }
+
+  const type = String(record?.type || '').toLowerCase();
+  const extMap: Record<string, string> = {
+    html: '.html',
+    markdown: '.md',
+    md: '.md',
+    csv: '.csv',
+    json: '.json',
+    txt: '.txt',
+    pdf: '.pdf',
+    png: '.png',
+    svg: '.svg',
+    jpg: '.jpg',
+    jpeg: '.jpeg'
+  };
+  return extMap[type] || '';
+};
+
+const getDownloadName = (record: any) => {
+  const baseName = String(record?.name || 'download').trim() || 'download';
+  if (/\.[^./\\]+$/.test(baseName)) {
+    return baseName;
+  }
+  return `${baseName}${getFileExtension(record)}`;
+};
+
+const handleDownload = async (record: any) => {
   const baseURL = import.meta.env.VITE_API_BASE_URL || '/api/v1';
   const downloadUrl = `${baseURL}/artifacts/${record.id}/download`;
-  window.open(downloadUrl, '_blank');
+  try {
+    const response = await fetch(downloadUrl);
+    if (!response.ok) {
+      throw new Error(`下载失败: ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = getDownloadName(record);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  } catch (error) {
+    console.error('Download failed', error);
+    message.error('下载失败');
+  }
 };
 
 const handleDelete = async (id: number) => {

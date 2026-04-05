@@ -16,6 +16,36 @@
 
             <a-collapse v-model:activeKey="activeKey" v-if="selectedDatasetId">
               <a-collapse-panel key="1" header="数据清洗 (ST-01)">
+                <a-divider orientation="left">快速清洗面板</a-divider>
+                <a-space direction="vertical" style="width: 100%; margin-bottom: 12px;">
+                  <a-button block @click="loadMissingStats" :loading="processing">查看缺失值统计</a-button>
+                  <a-form-item label="异常值目标列" style="margin-bottom: 0;">
+                    <a-select v-model:value="quickCleanOp.column" placeholder="选择数值列">
+                      <a-select-option v-for="col in numericColumns" :key="col" :value="col">{{ col }}</a-select-option>
+                    </a-select>
+                  </a-form-item>
+                  <a-form-item label="检测方法" style="margin-bottom: 0;">
+                    <a-select v-model:value="quickCleanOp.method">
+                      <a-select-option value="iqr">IQR</a-select-option>
+                      <a-select-option value="zscore">Z-Score</a-select-option>
+                    </a-select>
+                  </a-form-item>
+                  <a-form-item v-if="quickCleanOp.method === 'zscore'" label="Z 阈值" style="margin-bottom: 0;">
+                    <a-input-number v-model:value="quickCleanOp.z_threshold" :min="0.5" :step="0.5" style="width: 100%;" />
+                  </a-form-item>
+                  <a-form-item label="处理策略" style="margin-bottom: 0;">
+                    <a-select v-model:value="quickCleanOp.strategy">
+                      <a-select-option value="clip">截断到边界</a-select-option>
+                      <a-select-option value="remove">删除异常行</a-select-option>
+                      <a-select-option value="replace_mean">替换为均值</a-select-option>
+                    </a-select>
+                  </a-form-item>
+                  <a-space style="width: 100%;">
+                    <a-button style="width: 50%;" @click="previewOutliers" :loading="processing">异常值预览</a-button>
+                    <a-button type="primary" style="width: 50%;" @click="applyQuickOutlierHandling" :loading="processing">异常值处理</a-button>
+                  </a-space>
+                </a-space>
+                <a-divider />
                 <a-form-item label="操作类型">
                   <a-select v-model:value="cleanOp.type" placeholder="请选择清洗操作">
                     <a-select-option value="dropna">删除缺失值</a-select-option>
@@ -258,6 +288,61 @@
               </div>
             </a-tab-pane>
             
+            <a-tab-pane key="quick_cleaning" tab="快速清洗结果">
+              <div v-if="selectedDatasetId">
+                <a-space direction="vertical" style="width: 100%;">
+                  <a-card size="small" title="缺失值统计">
+                    <div v-if="missingStats">
+                      <a-descriptions bordered :column="2" size="small">
+                        <a-descriptions-item label="总行数">{{ missingStats.row_count }}</a-descriptions-item>
+                        <a-descriptions-item label="总列数">{{ missingStats.column_count }}</a-descriptions-item>
+                      </a-descriptions>
+                      <a-table
+                        style="margin-top: 12px;"
+                        :columns="missingStatsColumns"
+                        :data-source="missingStats.columns"
+                        :pagination="{ pageSize: 8 }"
+                        size="small"
+                        row-key="name"
+                        bordered
+                      />
+                    </div>
+                    <a-empty v-else description="请先点击“查看缺失值统计”" />
+                  </a-card>
+
+                  <a-card size="small" title="异常值预览">
+                    <div v-if="outlierPreview">
+                      <a-descriptions bordered :column="2" size="small">
+                        <a-descriptions-item label="目标列">{{ outlierPreview.column }}</a-descriptions-item>
+                        <a-descriptions-item label="检测方法">{{ outlierPreview.method }}</a-descriptions-item>
+                        <a-descriptions-item label="异常值数量">{{ outlierPreview.outlier_count }}</a-descriptions-item>
+                        <a-descriptions-item label="样例数">{{ outlierPreview.sample_values?.length || 0 }}</a-descriptions-item>
+                      </a-descriptions>
+                      <a-descriptions bordered :column="2" size="small" style="margin-top: 12px;">
+                        <a-descriptions-item label="下界">{{ formatMetricValue(outlierPreview.summary?.lower_bound) }}</a-descriptions-item>
+                        <a-descriptions-item label="上界">{{ formatMetricValue(outlierPreview.summary?.upper_bound) }}</a-descriptions-item>
+                        <a-descriptions-item label="均值">{{ formatMetricValue(outlierPreview.summary?.mean) }}</a-descriptions-item>
+                        <a-descriptions-item label="标准差">{{ formatMetricValue(outlierPreview.summary?.std) }}</a-descriptions-item>
+                      </a-descriptions>
+                      <a-table
+                        style="margin-top: 12px;"
+                        :columns="outlierSampleColumns"
+                        :data-source="outlierSampleRows"
+                        :pagination="false"
+                        size="small"
+                        row-key="key"
+                        bordered
+                      />
+                    </div>
+                    <a-empty v-else description="请先点击“异常值预览”" />
+                  </a-card>
+                </a-space>
+              </div>
+              <div v-else class="empty-state">
+                <a-empty description="请在左侧选择数据集" />
+              </div>
+            </a-tab-pane>
+
             <a-tab-pane key="model_results" tab="模型对比与结果">
               <div v-if="modelResults.length > 0">
                 <a-table 
@@ -317,6 +402,30 @@ const modelResultColumns = ref<any[]>([
   { title: '运行时间', dataIndex: 'time', key: 'time' }
 ])
 
+const missingStats = ref<any>(null)
+const outlierPreview = ref<any>(null)
+const quickCleanOp = ref({
+  column: '',
+  method: 'iqr',
+  strategy: 'clip',
+  z_threshold: 3
+})
+const missingStatsColumns = [
+  { title: '列名', dataIndex: 'name', key: 'name' },
+  { title: '缺失数', dataIndex: 'missing_count', key: 'missing_count' },
+  { title: '总数', dataIndex: 'total_count', key: 'total_count' },
+  {
+    title: '缺失率',
+    dataIndex: 'missing_rate',
+    key: 'missing_rate',
+    customRender: ({ text }: any) => `${((text || 0) * 100).toFixed(2)}%`
+  }
+]
+const outlierSampleColumns = [
+  { title: '序号', dataIndex: 'index', key: 'index', width: 80 },
+  { title: '异常值样例', dataIndex: 'value', key: 'value' }
+]
+
 // Operations state
 const cleanOp = ref<any>({ type: 'dropna', columns: [], method: 'mean', value: '', column: '', target_type: 'numeric' })
 const transformOp = ref<any>({ type: 'compute_column', new_column: '', expression: '', columns: [], method: 'minmax' })
@@ -344,6 +453,27 @@ const mlOp = ref<any>({
   test_size: 0.2
 })
 
+const numericColumns = computed(() => {
+  if (!currentDataset.value?.schema_info) {
+    return []
+  }
+  return currentDataset.value.schema_info
+    .filter((item: any) => {
+      const type = String(item.type || '').toLowerCase()
+      return ['int', 'float', 'double', 'long', 'short', 'decimal'].some(keyword => type.includes(keyword))
+    })
+    .map((item: any) => item.name)
+})
+
+const outlierSampleRows = computed(() => {
+  const values = outlierPreview.value?.sample_values || []
+  return values.map((value: any, index: number) => ({
+    key: index,
+    index: index + 1,
+    value
+  }))
+})
+
 const fetchDatasets = async () => {
   try {
     const res: any = await request.get(`/datasets/project/${projectId.value}`)
@@ -357,6 +487,9 @@ const fetchDatasets = async () => {
 
 const handleDatasetChange = async () => {
   currentDataset.value = datasets.value.find(d => d.id === selectedDatasetId.value)
+  missingStats.value = null
+  outlierPreview.value = null
+  quickCleanOp.value.column = ''
   if (currentDataset.value) {
     updateColumnsList()
     pagination.value.current = 1
@@ -373,12 +506,15 @@ const updateColumnsList = () => {
       key: col.name,
       width: 150
     }))
+    if (!quickCleanOp.value.column || !numericColumns.value.includes(quickCleanOp.value.column)) {
+      quickCleanOp.value.column = numericColumns.value[0] || ''
+    }
   }
 }
 
 const fetchTableData = async () => {
   if (!selectedDatasetId.value) return
-  
+
   tableLoading.value = true
   try {
     const res: any = await request.get(`/datasets/${selectedDatasetId.value}/data`, {
@@ -404,27 +540,107 @@ const handleTableChange = (pag: any) => {
   fetchTableData()
 }
 
+const refreshCurrentDataset = async () => {
+  if (!selectedDatasetId.value) return
+  const dsRes: any = await request.get(`/datasets/${selectedDatasetId.value}`)
+  if (dsRes.success) {
+    currentDataset.value = dsRes.data
+    updateColumnsList()
+  }
+}
+
 const executeOperation = async (operation: any) => {
   if (!selectedDatasetId.value) return
-  
+
   processing.value = true
   try {
     const res: any = await request.post(`/processing/${selectedDatasetId.value}/process`, [operation])
     if (res.success) {
       message.success('操作成功')
-      // Refetch dataset schema
-      const dsRes: any = await request.get(`/datasets/${selectedDatasetId.value}`)
-      if (dsRes.success) {
-        currentDataset.value = dsRes.data
-        updateColumnsList()
-        await fetchTableData()
-      }
+      await refreshCurrentDataset()
+      await fetchTableData()
     }
   } catch (e: any) {
     message.error(e.response?.data?.detail || '处理失败')
   } finally {
     processing.value = false
   }
+}
+
+const loadMissingStats = async () => {
+  if (!selectedDatasetId.value) return
+  processing.value = true
+  try {
+    const res: any = await request.get(`/quick-cleaning/${selectedDatasetId.value}/missing-stats`)
+    if (res.success) {
+      missingStats.value = res.data
+      activeTab.value = 'quick_cleaning'
+      message.success('缺失值统计已加载')
+    }
+  } catch (e: any) {
+    message.error(e.response?.data?.detail || '获取缺失值统计失败')
+  } finally {
+    processing.value = false
+  }
+}
+
+const previewOutliers = async () => {
+  if (!selectedDatasetId.value || !quickCleanOp.value.column) {
+    message.warning('请选择异常值目标列')
+    return
+  }
+  processing.value = true
+  try {
+    const res: any = await request.post(`/quick-cleaning/${selectedDatasetId.value}/outlier-preview`, {
+      column: quickCleanOp.value.column,
+      method: quickCleanOp.value.method,
+      z_threshold: quickCleanOp.value.z_threshold
+    })
+    if (res.success) {
+      outlierPreview.value = res.data
+      activeTab.value = 'quick_cleaning'
+      message.success('异常值预览已更新')
+    }
+  } catch (e: any) {
+    message.error(e.response?.data?.detail || '异常值预览失败')
+  } finally {
+    processing.value = false
+  }
+}
+
+const applyQuickOutlierHandling = async () => {
+  if (!selectedDatasetId.value || !quickCleanOp.value.column) {
+    message.warning('请选择异常值目标列')
+    return
+  }
+  processing.value = true
+  try {
+    const res: any = await request.post(`/quick-cleaning/${selectedDatasetId.value}/outlier-handle`, {
+      column: quickCleanOp.value.column,
+      method: quickCleanOp.value.method,
+      strategy: quickCleanOp.value.strategy,
+      z_threshold: quickCleanOp.value.z_threshold
+    })
+    if (res.success) {
+      message.success(`异常值处理完成，影响 ${res.data.affected_rows} 行`)
+      await refreshCurrentDataset()
+      await fetchTableData()
+      await loadMissingStats()
+      await previewOutliers()
+    }
+  } catch (e: any) {
+    message.error(e.response?.data?.detail || '异常值处理失败')
+  } finally {
+    processing.value = false
+  }
+}
+
+const formatMetricValue = (value: any) => {
+  if (value === null || value === undefined || value === '') {
+    return '-'
+  }
+  const num = Number(value)
+  return Number.isFinite(num) ? num.toFixed(4) : String(value)
 }
 
 const applyCleanOp = () => {
@@ -450,8 +666,6 @@ const applyClustering = async () => {
   processing.value = true
   try {
     message.info('聚类任务已提交，请在任务中心查看进度...')
-    // API call for clustering
-    // For now we just mock a success result for demo
     setTimeout(() => {
       message.success('聚类完成')
       processing.value = false
@@ -470,8 +684,6 @@ const applyML = async () => {
   processing.value = true
   try {
     message.info('模型训练任务已提交，请在任务中心查看进度...')
-    // API call for ML
-    // Mock result update
     setTimeout(() => {
       modelResults.value.push({
         algorithm: mlOp.value.algorithm,

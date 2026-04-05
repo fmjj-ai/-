@@ -14,8 +14,8 @@
           </template>
           <a-list :dataSource="datasets" :loading="datasetsLoading">
             <template #renderItem="{ item }">
-              <a-list-item 
-                @click="selectDataset(item)" 
+              <a-list-item
+                @click="selectDataset(item)"
                 :class="{'selected-item': currentDataset?.id === item.id}"
                 style="cursor: pointer; padding: 12px;"
               >
@@ -43,7 +43,7 @@
               <a-button type="primary" @click="createSnapshot" :loading="snapshotLoading">生成快照</a-button>
             </a-space>
           </template>
-          
+
           <div v-if="currentDataset.status === 'ready'">
             <a-alert style="margin-bottom: 16px;" message="双击单元格即可进行编辑" type="info" show-icon />
             <a-skeleton active :loading="tableLoading" :paragraph="{ rows: 10 }">
@@ -57,8 +57,8 @@
                 :scroll="{ x: 'max-content', y: 500 }"
               >
                 <template #bodyCell="{ column, record }">
-                  <div 
-                    class="editable-cell" 
+                  <div
+                    class="editable-cell"
                     @dblclick="editCell(record, column.dataIndex)"
                   >
                     <a-input
@@ -88,7 +88,6 @@
       </a-col>
     </a-row>
 
-    <!-- Snapshots Modal -->
     <a-modal v-model:visible="snapshotsVisible" title="数据集快照" :footer="null">
       <a-table :columns="snapshotColumns" :dataSource="snapshots" :loading="snapshotsLoading" rowKey="id">
         <template #bodyCell="{ column, record }">
@@ -116,7 +115,6 @@ const datasetsLoading = ref(false)
 const uploading = ref(false)
 const currentDataset = ref<any>(null)
 
-// Table Data
 const tableColumns = ref<any[]>([])
 const tableData = ref<any[]>([])
 const tableLoading = ref(false)
@@ -125,6 +123,12 @@ const pagination = ref({
   pageSize: 50,
   total: 0,
   showSizeChanger: true
+})
+
+const normalizeTablePayload = (payload: any) => ({
+  items: payload.items ?? payload.data ?? [],
+  total: payload.total ?? 0,
+  columns: payload.columns ?? []
 })
 
 const fetchDatasets = async () => {
@@ -204,6 +208,20 @@ const setupTableColumns = () => {
   }
 }
 
+const columnsFromPreview = (columns: string[]) => {
+  if (!currentDataset.value || columns.length === 0) return
+  const schemaColumns = (currentDataset.value.schema_info || []).map((col: any) => col.name)
+  if (schemaColumns.length === columns.length && schemaColumns.every((name: string, index: number) => name === columns[index])) {
+    return
+  }
+  tableColumns.value = columns.map((col: string) => ({
+    title: col,
+    dataIndex: col,
+    key: col,
+    width: 150
+  }))
+}
+
 const selectDataset = (dataset: any) => {
   currentDataset.value = dataset
   pagination.value.current = 1
@@ -217,7 +235,7 @@ const selectDataset = (dataset: any) => {
 
 const fetchTableData = async () => {
   if (!currentDataset.value || currentDataset.value.status !== 'ready') return
-  
+
   tableLoading.value = true
   try {
     const res: any = await request.get(`/datasets/${currentDataset.value.id}/data`, {
@@ -227,8 +245,10 @@ const fetchTableData = async () => {
       }
     })
     if (res.success) {
-      tableData.value = res.data.items
-      pagination.value.total = res.data.total
+      const normalized = normalizeTablePayload(res.data)
+      tableData.value = normalized.items
+      pagination.value.total = normalized.total
+      columnsFromPreview(normalized.columns)
     }
   } catch (e) {
     message.error('获取表格数据失败')
@@ -243,7 +263,6 @@ const handleTableChange = (pag: any) => {
   fetchTableData()
 }
 
-// Editing
 const editingCell = ref<{rowKey: number, colKey: string} | null>(null)
 const editingValue = ref('')
 
@@ -256,7 +275,6 @@ const saveCell = async (record: any, colKey: string) => {
   if (!editingCell.value) return
   const originalValue = record[colKey]
   if (editingValue.value !== originalValue) {
-    // Update backend
     try {
       const res: any = await request.put(`/datasets/${currentDataset.value.id}/data`, {
         row_index: record._row_index,
@@ -273,7 +291,6 @@ const saveCell = async (record: any, colKey: string) => {
   editingCell.value = null
 }
 
-// Snapshots
 const snapshotLoading = ref(false)
 const snapshotsVisible = ref(false)
 const snapshots = ref<any[]>([])
@@ -319,7 +336,6 @@ const formatDate = (dateStr: string) => {
   return dayjs(dateStr).format('YYYY-MM-DD HH:mm:ss')
 }
 
-// Poll dataset status if not ready
 let timer: any = null
 onMounted(() => {
   fetchDatasets()
@@ -333,7 +349,6 @@ onMounted(() => {
 onUnmounted(() => {
   if (timer) clearInterval(timer)
 })
-
 </script>
 
 <style scoped>

@@ -1,16 +1,112 @@
 from fastapi import APIRouter, Depends, HTTPException, Body
+
 from sqlalchemy.orm import Session
+
 from typing import List, Dict, Any, Optional
+
 import os
+
 import pandas as pd
+
 import numpy as np
 
+
+
 from app.db.session import get_db
+
 from app.models.dataset import Dataset
+
 from app.schemas.response import StandardResponse
+
 from app.core.config import settings
 
+from app.services.quick_cleaning_service import QuickCleaningService
+
 router = APIRouter()
+
+
+
+
+@router.post("/{dataset_id}/outliers", response_model=StandardResponse[Dict[str, Any]])
+
+def handle_outliers(
+
+    dataset_id: int,
+
+    column: str = Body(..., embed=True),
+
+    method: str = Body("iqr", embed=True),
+
+    strategy: str = Body("clip", embed=True),
+
+    z_threshold: float = Body(3.0, embed=True),
+
+    db: Session = Depends(get_db)
+
+):
+
+    """快速异常值处理，作为现有 processing 主流程的补充入口。"""
+
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+
+    if not dataset or not dataset.file_path or not os.path.exists(dataset.file_path):
+
+        raise HTTPException(status_code=404, detail="数据集或文件不存在")
+
+
+
+    try:
+
+        df = pd.read_parquet(dataset.file_path)
+
+        if column not in df.columns:
+
+            raise ValueError(f"列不存在: {column}")
+
+        result = QuickCleaningService.handle_outliers(
+
+            df,
+
+            column=column,
+
+            method=method,
+
+            strategy=strategy,
+
+            z_threshold=z_threshold,
+
+        )
+
+        df.to_parquet(dataset.file_path, engine='pyarrow')
+
+
+
+        schema_info = []
+
+        for col, dtype in df.dtypes.items():
+
+            schema_info.append({"name": str(col), "type": str(dtype)})
+
+        dataset.row_count = len(df)
+
+        dataset.col_count = len(df.columns)
+
+        dataset.schema_info = schema_info
+
+        db.commit()
+
+        return StandardResponse(success=True, data=result)
+
+    except ValueError as ve:
+
+        raise HTTPException(status_code=400, detail=str(ve))
+
+    except Exception as e:
+
+        db.rollback()
+
+        raise HTTPException(status_code=500, detail=f"异常值处理失败: {str(e)}")
+
 
 @router.post("/{dataset_id}/process", response_model=StandardResponse[bool])
 def process_dataset(

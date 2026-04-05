@@ -103,14 +103,18 @@ if "!NEED_NPM_CI!"=="1" (
 )
 
 echo [INFO] 正在启动后端服务...
-start "Solo Backend" cmd /k "chcp 65001 >nul && set PYTHONUTF8=1 && cd /d ""%BACKEND_DIR%"" && ""%VENV_PYTHON%"" run.py"
+start "Solo Backend" /D "%BACKEND_DIR%" cmd /k "chcp 65001 >nul && set PYTHONUTF8=1 && ""%VENV_PYTHON%"" run.py"
 if errorlevel 1 (
   echo [ERROR] 后端窗口启动失败。
   exit /b 1
 )
 
+echo [INFO] 正在等待后端服务就绪...
+call :wait_port_ready 8000 30 后端服务
+if errorlevel 1 exit /b 1
+
 echo [INFO] 正在启动前端服务...
-start "Solo Frontend" cmd /k "chcp 65001 >nul && set PYTHONUTF8=1 && cd /d ""%FRONTEND_DIR%"" && npm run dev -- --host 127.0.0.1"
+start "Solo Frontend" /D "%FRONTEND_DIR%" cmd /k "chcp 65001 >nul && set PYTHONUTF8=1 && npm run dev -- --host 127.0.0.1"
 if errorlevel 1 (
   echo [ERROR] 前端窗口启动失败。
   exit /b 1
@@ -130,3 +134,22 @@ if errorlevel 1 (
   exit /b 1
 )
 exit /b 0
+
+:wait_port_ready
+set "WAIT_PORT=%~1"
+set "WAIT_SECONDS=%~2"
+set "WAIT_NAME=%~3"
+if not defined WAIT_SECONDS set "WAIT_SECONDS=30"
+if not defined WAIT_NAME set "WAIT_NAME=服务"
+
+for /l %%I in (1,1,!WAIT_SECONDS!) do (
+  powershell -NoProfile -Command "$port = !WAIT_PORT!; $listener = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue; if ($null -ne $listener) { exit 0 } else { exit 1 }" >nul 2>nul
+  if not errorlevel 1 (
+    echo [INFO] !WAIT_NAME! 已监听 !WAIT_PORT! 端口。
+    exit /b 0
+  )
+  timeout /t 1 /nobreak >nul
+)
+
+echo [ERROR] !WAIT_NAME! 在 !WAIT_SECONDS! 秒内未监听 !WAIT_PORT! 端口，请检查对应窗口输出。
+exit /b 1

@@ -52,6 +52,21 @@
                 <a-select-option value="high-contrast">高对比</a-select-option>
               </a-select>
             </a-form-item>
+            <a-form-item label="后端主题色卡中心">
+              <a-select v-model:value="settings.chartTheme" style="width: 320px" allowClear placeholder="可选后端预设/自定义色卡">
+                <a-select-option v-for="item in paletteOptions" :key="item.key || item.name" :value="item.key || item.name">
+                  {{ item.name }}
+                </a-select-option>
+              </a-select>
+              <div class="form-hint">这里展示后端 theme-palettes 接口返回的预设/自定义色卡。</div>
+            </a-form-item>
+            <a-form-item label="新增自定义色卡">
+              <a-space direction="vertical" style="width: 100%">
+                <a-input v-model:value="customPaletteName" placeholder="色卡名称" />
+                <a-input v-model:value="customPaletteColors" placeholder="用逗号分隔颜色值，例如 #1677ff,#52c41a,#faad14" />
+                <a-button @click="createPalette">保存到后端色卡中心</a-button>
+              </a-space>
+            </a-form-item>
             <a-form-item>
               <a-button type="primary" @click="saveSettings">保存设置</a-button>
             </a-form-item>
@@ -93,10 +108,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { message } from 'ant-design-vue';
+import request from '@/utils/request';
 
 const activeTab = ref('api');
+
+const paletteOptions = ref<any[]>([])
+const customPaletteName = ref('')
+const customPaletteColors = ref('#1677ff,#52c41a,#faad14,#f5222d,#722ed1')
 
 const settings = ref({
   deepseekApiKey: '',
@@ -110,10 +130,43 @@ const settings = ref({
   histogramBins: 50
 });
 
+const loadPalettes = async () => {
+  try {
+    const res = await request.get('/theme-palettes')
+    const data = res?.data || {}
+    paletteOptions.value = [...(data.presets || []), ...(data.custom || [])]
+  } catch (e) {
+    console.warn('load palettes failed', e)
+  }
+}
+
+const createPalette = async () => {
+  try {
+    const colors = customPaletteColors.value.split(',').map((s: string) => s.trim()).filter(Boolean)
+    if (!customPaletteName.value || colors.length < 3) {
+      message.warning('请填写色卡名称，并至少提供 3 个颜色')
+      return
+    }
+    await request.post('/theme-palettes', {
+      name: customPaletteName.value,
+      colors,
+      is_global: true
+    })
+    message.success('自定义色卡已保存')
+    customPaletteName.value = ''
+    await loadPalettes()
+  } catch (e: any) {
+    message.error(e?.response?.data?.error?.message || e?.response?.data?.detail || '保存色卡失败')
+  }
+}
+
 const saveSettings = () => {
-  // TODO: Save settings via API or local storage
   message.success('设置已保存并生效');
 };
+
+onMounted(() => {
+  loadPalettes()
+})
 </script>
 
 <style scoped>
