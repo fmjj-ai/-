@@ -5,6 +5,7 @@ import hashlib
 import os
 
 from app.db.session import get_db
+from app.models.artifact import Artifact
 from app.models.dataset import Dataset
 from app.models.task import Task
 from app.schemas.response import StandardResponse
@@ -33,6 +34,22 @@ async def start_sentiment_analysis(
     if not dataset or not dataset.file_path or not os.path.exists(dataset.file_path):
         raise HTTPException(status_code=404, detail="数据集或文件不存在")
 
+    mask_artifact_id = config.get("wordcloud_mask_artifact_id")
+    if mask_artifact_id:
+        try:
+            mask_artifact_id = int(mask_artifact_id)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="词云轮廓图参数无效") from exc
+        mask_artifact = (
+            db.query(Artifact)
+            .filter(Artifact.id == mask_artifact_id, Artifact.project_id == dataset.project_id)
+            .first()
+        )
+        if not mask_artifact or not os.path.exists(mask_artifact.file_path):
+            raise HTTPException(status_code=404, detail="词云轮廓图不存在")
+        config = dict(config)
+        config["mask_path"] = mask_artifact.file_path
+
     dataset_fingerprint = _get_file_hash(dataset.file_path)
     signature = build_sentiment_signature(dataset_fingerprint, config)
 
@@ -52,12 +69,14 @@ async def start_sentiment_analysis(
         f"情感分析 - {dataset.name}",
         run_sentiment_task,
         dataset_id=dataset.id,
+        dataset_name=dataset.name,
         file_path=dataset.file_path,
         config=config,
         project_id=dataset.project_id,
         metadata={
             "kind": "sentiment_analysis",
             "dataset_id": dataset.id,
+            "dataset_name": dataset.name,
             "signature": signature,
             "dataset_fingerprint": dataset_fingerprint,
         },

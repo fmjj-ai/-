@@ -8,6 +8,7 @@ import pyarrow.parquet as pq
 import pyarrow.compute as pc
 
 from app.db.session import get_db
+from app.models.artifact import Artifact
 from app.models.dataset import Dataset
 from app.schemas.response import StandardResponse
 from app.core.config import settings
@@ -85,6 +86,22 @@ def _should_skip_unique_count(field, row_count: int) -> bool:
     return row_count > OVERVIEW_UNIQUE_COUNT_ROW_THRESHOLD and str(field.type) in OVERVIEW_UNIQUE_COUNT_DISTINCT_SCAN_TYPES
 
 
+def _unwrap_body_default(value: Any):
+    """兼容直接调用路由函数的测试场景，Body(...) 默认值需要显式展开。"""
+    return getattr(value, "default", value)
+
+
+def _maybe_compute_unique_count(column_data, field, row_count: int):
+    if not _should_skip_unique_count(field, row_count):
+        return int(pc.count_distinct(column_data).as_py())
+
+    sample_size = min(row_count, 2048)
+    sample_unique_count = int(pc.count_distinct(column_data.slice(0, sample_size)).as_py())
+    if sample_unique_count <= 32:
+        return int(pc.count_distinct(column_data).as_py())
+    return None
+
+
 def _should_skip_descriptive_categorical_scan(series: pd.Series, mode: str) -> bool:
     if mode != DESCRIPTIVE_SUMMARY_MODE:
         return False
@@ -128,7 +145,7 @@ def _build_overview(file_path: str) -> Dict[str, Any]:
         col_name = field.name
         column_data = parquet_file.read(columns=[col_name]).column(0)
         missing_count = int(column_data.null_count)
-        unique_count = None if _should_skip_unique_count(field, row_count) else int(pc.count_distinct(column_data).as_py())
+        unique_count = _maybe_compute_unique_count(column_data, field, row_count)
 
         column_overview = {
             "name": str(col_name),
@@ -143,6 +160,47 @@ def _build_overview(file_path: str) -> Dict[str, Any]:
         overview["columns"].append(column_overview)
 
     return overview
+
+
+def _filter_correlation_columns(df: pd.DataFrame) -> pd.DataFrame:
+    numeric_df = df.select_dtypes(include=[np.number]).copy()
+    if numeric_df.empty:
+        raise ValueError("没有数值列可计算相关性")
+
+    valid_columns: List[str] = []
+    for column in numeric_df.columns:
+        series = numeric_df[column].dropna()
+        if series.empty:
+            continue
+        if series.nunique(dropna=True) <= 1:
+            continue
+        valid_columns.append(column)
+
+    if len(valid_columns) < 2:
+        raise ValueError("有效数值列不足 2 个，无法计算相关性热力图")
+
+    return numeric_df[valid_columns]
+
+
+def _register_generated_artifact(
+    db: Session,
+    project_id: int,
+    name: str,
+    artifact_type: str,
+    file_path: str,
+) -> Artifact:
+    artifact = Artifact(
+        project_id=project_id,
+        task_id=None,
+        name=name,
+        type=artifact_type,
+        file_path=file_path,
+        size=int(os.path.getsize(file_path)) if os.path.exists(file_path) else 0,
+    )
+    db.add(artifact)
+    db.commit()
+    db.refresh(artifact)
+    return artifact
 
 
 @router.get("/{dataset_id}/overview", response_model=StandardResponse[Dict[str, Any]])
@@ -169,6 +227,9 @@ def get_descriptive_stats(
     dataset = _get_dataset_or_404(dataset_id, db)
 
     try:
+        columns = _unwrap_body_default(columns)
+        mode = _unwrap_body_default(mode)
+        limit_columns = _unwrap_body_default(limit_columns)
         if mode not in {DESCRIPTIVE_FULL_MODE, DESCRIPTIVE_SUMMARY_MODE}:
             raise ValueError(f"不支持的描述性统计模式: {mode}")
 
@@ -218,13 +279,13 @@ def get_correlation_matrix(
     dataset = _get_dataset_or_404(dataset_id, db)
 
     try:
+        columns = _unwrap_body_default(columns)
+        method = _unwrap_body_default(method)
         df = _load_parquet_dataframe(dataset.file_path, columns=columns)
         if len(df) > 10000:
             df = df.sample(n=10000, random_state=42)
 
-        numeric_df = df.select_dtypes(include=[np.number])
-        if numeric_df.empty:
-            raise ValueError("没有数值列可计算相关性")
+        numeric_df = _filter_correlation_columns(df)
 
         corr_matrix = numeric_df.corr(method=method)
         cols = corr_matrix.columns.tolist()
@@ -241,8 +302,10 @@ def get_correlation_matrix(
             "method": method
         }
         return StandardResponse(success=True, data=result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"计算相关性矩阵失败: {str(e)}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"计算相关性矩阵失败: {str(exc)}") from exc
 
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
@@ -413,7 +476,22 @@ def generate_report(
             file_path = os.path.join(artifacts_dir, f"report_{report_id}.md")
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(md_content)
-            return StandardResponse(success=True, data={"file_path": file_path, "type": "markdown"})
+            artifact = _register_generated_artifact(
+                db=db,
+                project_id=dataset.project_id,
+                name=f"{dataset.name}统计分析报告.md",
+                artifact_type="markdown",
+                file_path=file_path,
+            )
+            return StandardResponse(
+                success=True,
+                data={
+                    "artifact_id": artifact.id,
+                    "name": artifact.name,
+                    "file_path": file_path,
+                    "type": "markdown",
+                },
+            )
 
         if report_type == "pdf":
             html_content = markdown.markdown(md_content, extensions=['tables'])
@@ -442,7 +520,22 @@ def generate_report(
                     'encoding': "UTF-8",
                 }
                 pdfkit.from_string(html_doc, pdf_path, options=options)
-                return StandardResponse(success=True, data={"file_path": pdf_path, "type": "pdf"})
+                artifact = _register_generated_artifact(
+                    db=db,
+                    project_id=dataset.project_id,
+                    name=f"{dataset.name}统计分析报告.pdf",
+                    artifact_type="pdf",
+                    file_path=pdf_path,
+                )
+                return StandardResponse(
+                    success=True,
+                    data={
+                        "artifact_id": artifact.id,
+                        "name": artifact.name,
+                        "file_path": pdf_path,
+                        "type": "pdf",
+                    },
+                )
 
             except Exception as exc:
                 raise HTTPException(status_code=500, detail=f"PDF 生成失败: {exc}")

@@ -92,23 +92,30 @@ watch(() => props.theme, () => {
 });
 
 // 导出方法
-const exportChart = (type: 'png' | 'svg', transparent = false, pixelRatio = 2) => {
-  if (!chartInstance.value) return;
-  
-  const url = chartInstance.value.getDataURL({
+const getChartDataUrl = (type: 'png' | 'svg', transparent = false, pixelRatio = 2) => {
+  if (!chartInstance.value) return '';
+
+  return chartInstance.value.getDataURL({
     type,
     pixelRatio,
     backgroundColor: transparent ? 'transparent' : (props.theme === 'dark' ? '#333' : '#fff')
   });
-  
+};
+
+const exportChart = (type: 'png' | 'svg', transparent = false, pixelRatio = 2) => {
+  const url = getChartDataUrl(type, transparent, pixelRatio);
+  if (!url) return '';
+
   const link = document.createElement('a');
   link.download = `chart-${Date.now()}.${type}`;
   link.href = url;
   link.click();
+  return url;
 };
 
 defineExpose({
   exportChart,
+  getChartDataUrl,
   getInstance: () => chartInstance.value
 });
 </script>

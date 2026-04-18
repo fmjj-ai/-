@@ -98,15 +98,23 @@ import {
   SettingOutlined 
 } from '@ant-design/icons-vue';
 import { useTaskStore } from '@/store/modules/task';
+import { useProjectStore } from '@/store/modules/project';
 import GlobalTaskCenter from '@/components/GlobalTaskCenter.vue';
 
 const router = useRouter();
 const route = useRoute();
 const taskStore = useTaskStore();
+const projectStore = useProjectStore();
 const selectedKeys = ref<string[]>([route.name as string || 'Home']);
 const collapsed = ref<boolean>(false);
 
-const projectId = computed(() => route.params.projectId as string | undefined);
+const projectId = computed(() => {
+  const routeProjectId = route.params.projectId as string | undefined;
+  if (routeProjectId) {
+    return routeProjectId;
+  }
+  return projectStore.currentProjectId || undefined;
+});
 
 onMounted(() => {
   taskStore.connectSSE();
@@ -119,6 +127,16 @@ watch(
       selectedKeys.value = [name as string];
     }
   }
+);
+
+watch(
+  () => route.params.projectId,
+  (value) => {
+    if (value) {
+      projectStore.setCurrentProject(String(value));
+    }
+  },
+  { immediate: true }
 );
 
 const handleMenuClick = ({ key }: { key: string }) => {

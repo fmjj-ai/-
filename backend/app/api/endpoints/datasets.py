@@ -194,7 +194,7 @@ def get_dataset_data(
 
     try:
         parquet_file = pq.ParquetFile(dataset.file_path)
-        total = dataset.row_count or parquet_file.metadata.num_rows
+        total = getattr(dataset, 'row_count', None) or parquet_file.metadata.num_rows
         start = (page - 1) * size
         if start >= total:
             return StandardResponse(success=True, data={
@@ -208,7 +208,7 @@ def get_dataset_data(
         remaining = size
         skip_rows = start
         batches = []
-        current_row_index = start
+        current_row_index = 0
         columns = [field.name for field in parquet_file.schema_arrow]
 
         for batch in parquet_file.iter_batches(batch_size=min(max(size, 128), 4096)):

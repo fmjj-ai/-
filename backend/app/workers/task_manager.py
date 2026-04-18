@@ -88,6 +88,7 @@ class TaskManager:
             error = msg.get("error")
 
             try:
+                final_result = result
                 with SessionLocal() as db:
                     task_db = db.query(Task).filter(Task.id == task_id).first()
                     if task_db:
@@ -133,7 +134,7 @@ class TaskManager:
                 "task_id": task_id,
                 "progress": progress,
                 "status": status,
-                "result": result,
+                "result": final_result,
                 "error": error,
             })
 

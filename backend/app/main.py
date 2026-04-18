@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+from contextlib import suppress
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -31,8 +32,21 @@ async def lifespan(app: FastAPI):
     listener_task = asyncio.create_task(task_manager.start_progress_listener())
     yield
     # 关闭时取消任务
+    if task_manager._progress_queue is not None:
+        try:
+            task_manager._progress_queue.put(None)
+        except Exception:
+            pass
     listener_task.cancel()
-    task_manager.pool.shutdown(wait=False)
+    with suppress(asyncio.CancelledError, TimeoutError):
+        await asyncio.wait_for(listener_task, timeout=2)
+    if task_manager.pool is not None:
+        task_manager.pool.shutdown(wait=False, cancel_futures=True)
+        task_manager.pool = None
+    if task_manager._manager is not None:
+        task_manager._manager.shutdown()
+        task_manager._manager = None
+        task_manager._progress_queue = None
 
 # 3. 初始化 FastAPI 应用
 app = FastAPI(

@@ -23,19 +23,19 @@
       <a-col :span="8">
         <a-card title="快捷入口" :bordered="false" class="neumorphism-card h-full">
           <div class="shortcuts-grid">
-            <div class="shortcut-item" @click="$router.push({ name: 'Projects' })">
+            <div class="shortcut-item" @click="openProjectPicker('Datasets', '选择项目并进入数据导入')">
               <UploadOutlined class="shortcut-icon" />
               <span>数据导入</span>
             </div>
-            <div class="shortcut-item" @click="showInfo('请先进入项目')">
+            <div class="shortcut-item" @click="openProjectPicker('Exports', '选择项目并进入导出中心')">
               <ExportOutlined class="shortcut-icon" />
               <span>导出中心</span>
             </div>
-            <div class="shortcut-item" @click="showInfo('请先进入项目')">
+            <div class="shortcut-item" @click="openProjectPicker('Templates', '选择项目并进入模板中心')">
               <AppstoreOutlined class="shortcut-icon" />
               <span>模板中心</span>
             </div>
-            <div class="shortcut-item" @click="showInfo('请先进入项目')">
+            <div class="shortcut-item" @click="openProjectPicker('Settings', '选择项目并进入项目设置')">
               <SettingOutlined class="shortcut-icon" />
               <span>全局设置</span>
             </div>
@@ -99,14 +99,21 @@
       </a-col>
     </a-row>
   </div>
+
+  <ProjectPickerModal
+    v-model:open="pickerVisible"
+    :target-route-name="pickerTargetRoute"
+    :dialog-title="pickerTitle"
+    default-view="card"
+  />
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, computed, markRaw } from 'vue';
 import { useRouter } from 'vue-router';
-import { message } from 'ant-design-vue';
 import request from '@/utils/request';
 import { useTaskStore } from '@/store/modules/task';
+import ProjectPickerModal from '@/components/ProjectPickerModal.vue';
 import { 
   FolderOpenOutlined, BellOutlined, UploadOutlined, ExportOutlined, 
   AppstoreOutlined, SettingOutlined, HeartOutlined, BarChartOutlined, 
@@ -115,10 +122,6 @@ import {
 
 const router = useRouter();
 const taskStore = useTaskStore();
-
-const showInfo = (msg: string) => {
-  message.info(msg);
-};
 
 const modules = [
   {
@@ -146,6 +149,9 @@ const modules = [
 
 const recentProjects = ref<any[]>([]);
 const loadingProjects = ref(false);
+const pickerVisible = ref(false);
+const pickerTargetRoute = ref('Datasets');
+const pickerTitle = ref('选择项目');
 
 const activeTasks = computed(() => {
   return taskStore.tasks.filter(t => t.status === 'running' || t.status === 'pending').slice(0, 5);
@@ -169,9 +175,14 @@ const goToProject = (projectId: number) => {
   router.push({ name: 'Datasets', params: { projectId: String(projectId) } });
 };
 
+const openProjectPicker = (routeName: string, title: string) => {
+  pickerTargetRoute.value = routeName;
+  pickerTitle.value = title;
+  pickerVisible.value = true;
+};
+
 const handleModuleClick = (module: any) => {
-  message.info(`请先进入或选择一个项目，再使用【${module.title}】功能`);
-  router.push({ name: 'Projects' });
+  openProjectPicker(module.key, `选择项目并进入${module.title}`);
 };
 
 onMounted(() => {

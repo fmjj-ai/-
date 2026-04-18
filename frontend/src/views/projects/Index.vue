@@ -2,10 +2,17 @@
   <div class="projects-container">
     <div class="header">
       <h2>项目管理</h2>
-      <a-button type="primary" @click="showCreateModal">创建项目</a-button>
+      <a-space>
+        <a-radio-group v-model:value="viewMode" button-style="solid">
+          <a-radio-button value="table">列表视角</a-radio-button>
+          <a-radio-button value="card">窗格视角</a-radio-button>
+        </a-radio-group>
+        <a-button type="primary" @click="showCreateModal">创建项目</a-button>
+      </a-space>
     </div>
 
     <a-table 
+      v-if="viewMode === 'table'"
       :columns="columns" 
       :data-source="projects" 
       :loading="loading" 
@@ -33,6 +40,35 @@
         </template>
       </template>
     </a-table>
+
+    <div v-else class="project-grid">
+      <a-card
+        v-for="project in projects"
+        :key="project.id"
+        hoverable
+        class="project-card"
+      >
+        <div class="project-card-head">
+          <div>
+            <div class="project-title">{{ project.name }}</div>
+            <div class="project-time">{{ formatDate(project.created_at) }}</div>
+          </div>
+          <a-tag :color="project.is_archived ? 'red' : 'green'">
+            {{ project.is_archived ? '已归档' : '活跃' }}
+          </a-tag>
+        </div>
+        <p class="project-description">{{ project.description || '暂无描述' }}</p>
+        <div class="project-extra">数据集数量：{{ project.dataset_count || 0 }}</div>
+        <a-space class="project-actions">
+          <a-button type="primary" @click="goToProject(project)">进入</a-button>
+          <a-button @click="editProject(project)">编辑</a-button>
+          <a-popconfirm title="确定要删除这个项目吗？该操作不可恢复！" @confirm="deleteProject(project.id)">
+            <a-button danger>删除</a-button>
+          </a-popconfirm>
+        </a-space>
+      </a-card>
+      <a-empty v-if="!loading && !projects.length" description="暂无项目，先创建一个吧" />
+    </div>
 
     <!-- Create/Edit Modal -->
     <a-modal
@@ -68,7 +104,8 @@ const router = useRouter()
 const projectStore = useProjectStore()
 
 const loading = ref(false)
-const projects = ref([])
+const projects = ref<any[]>([])
+const viewMode = ref<'table' | 'card'>('table')
 
 const columns = [
   { title: '项目名称', dataIndex: 'name', key: 'name' },
@@ -202,5 +239,43 @@ const goToProject = (record: any) => {
   box-shadow: var(--shadow-outer);
   background: var(--bg-elevated);
   padding: 16px;
+}
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.project-card {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line-soft);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(245, 248, 255, 0.92));
+}
+.project-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.project-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.project-time {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.project-description {
+  min-height: 44px;
+  color: var(--text-secondary);
+}
+.project-extra {
+  margin-bottom: 16px;
+  color: var(--text-secondary);
+}
+.project-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

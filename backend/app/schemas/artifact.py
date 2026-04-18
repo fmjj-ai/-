@@ -15,6 +15,7 @@ class ArtifactCreate(ArtifactBase):
 
 class ArtifactResponse(ArtifactBase):
     id: int
+    task_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

@@ -6,8 +6,8 @@ export const useProjectStore = defineStore('project', {
     projects: [] as any[]
   }),
   actions: {
-    setCurrentProject(id: string) {
-      this.currentProjectId = id
+    setCurrentProject(id: string | number | null) {
+      this.currentProjectId = id === null ? null : String(id)
     }
   }
 })

@@ -55,8 +55,11 @@ def run_clustering_task(
             # Auto-K using Silhouette Score
             best_k = 2
             best_score = -1
-            max_k = min(10, len(X) - 1)
-            for k in range(2, max_k + 1):
+            min_k = max(2, int(config.get("k_min", 2) or 2))
+            max_k = min(int(config.get("k_max", 10) or 10), len(X) - 1)
+            if max_k < min_k:
+                max_k = min_k
+            for k in range(min_k, max_k + 1):
                 temp_model = KMeans(n_clusters=k, random_state=42)
                 temp_labels = temp_model.fit_predict(X)
                 score = silhouette_score(X, temp_labels)
@@ -152,7 +155,8 @@ def run_predictive_modeling_task(
         unique_classes = y.nunique()
         is_multiclass = unique_classes > 2
         
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    test_size = float(config.get("test_size", 0.2) or 0.2)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
     
     update_progress(40.0, f"正在训练 {algo} 模型...")
     

@@ -47,14 +47,15 @@
           <div v-if="currentDataset.status === 'ready'">
             <a-alert style="margin-bottom: 16px;" message="双击单元格即可进行编辑" type="info" show-icon />
             <a-skeleton active :loading="tableLoading" :paragraph="{ rows: 10 }">
-              <a-table
+              <DataPreviewTable
                 :columns="tableColumns"
                 :data-source="tableData"
                 :pagination="pagination"
-                @change="handleTableChange"
                 bordered
                 size="middle"
+                row-key="_row_index"
                 :scroll="{ x: 'max-content', y: 500 }"
+                @change="handleTableChange"
               >
                 <template #bodyCell="{ column, record }">
                   <div
@@ -66,13 +67,13 @@
                       v-model:value="editingValue"
                       size="small"
                       @blur="saveCell(record, column.dataIndex)"
-                      @pressEnter="saveCell(record, column.dataIndex)"
-                      auto-focus
-                    />
-                    <span v-else>{{ record[column.dataIndex] }}</span>
+                        @pressEnter="saveCell(record, column.dataIndex)"
+                        auto-focus
+                      />
+                    <span v-else>{{ formatPreviewCellValue(record[column.dataIndex]) }}</span>
                   </div>
                 </template>
-              </a-table>
+              </DataPreviewTable>
             </a-skeleton>
           </div>
           <div v-else-if="currentDataset.status === 'failed'">
@@ -106,6 +107,9 @@ import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import request from '@/utils/request'
 import dayjs from 'dayjs'
+
+import DataPreviewTable from '@/components/DataPreviewTable.vue'
+import { formatPreviewCellValue } from '@/utils/previewTable'
 
 const route = useRoute()
 const projectId = computed(() => route.params.projectId)

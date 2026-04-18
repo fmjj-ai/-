@@ -39,7 +39,12 @@ async def start_clustering(
         dataset_id=dataset.id,
         file_path=dataset.file_path,
         config=config,
-        project_id=dataset.project_id
+        project_id=dataset.project_id,
+        metadata={
+            "kind": "clustering",
+            "dataset_id": dataset.id,
+            "dataset_name": dataset.name,
+        },
     )
 
     return StandardResponse(success=True, data=task_id)
@@ -70,7 +75,13 @@ async def start_predictive_modeling(
         dataset_id=dataset.id,
         file_path=dataset.file_path,
         config=config,
-        project_id=dataset.project_id
+        project_id=dataset.project_id,
+        metadata={
+            "kind": "predictive_modeling",
+            "dataset_id": dataset.id,
+            "dataset_name": dataset.name,
+            "task_type": str(config.get("task_type", "") or ""),
+        },
     )
 
     return StandardResponse(success=True, data=task_id)
