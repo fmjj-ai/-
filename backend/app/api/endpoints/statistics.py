@@ -1,17 +1,25 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
-from sqlalchemy.orm import Session
-from typing import List, Dict, Any, Optional
 import os
-import pandas as pd
+import uuid
+from typing import Any, Dict, List, Optional
+
+import markdown
 import numpy as np
-import pyarrow.parquet as pq
+import pandas as pd
+import pdfkit
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
+from fastapi import APIRouter, Body, Depends, HTTPException
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import PolynomialFeatures
+from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.models.artifact import Artifact
 from app.models.dataset import Dataset
 from app.schemas.response import StandardResponse
-from app.core.config import settings
 
 router = APIRouter()
 
@@ -22,10 +30,10 @@ DESCRIPTIVE_SUMMARY_TOP_VALUES = 5
 DESCRIPTIVE_FULL_TOP_VALUES = 10
 OVERVIEW_UNIQUE_COUNT_ROW_THRESHOLD = 50000
 OVERVIEW_UNIQUE_COUNT_DISTINCT_SCAN_TYPES = {
-    'string',
-    'large_string',
-    'binary',
-    'large_binary',
+    "string",
+    "large_string",
+    "binary",
+    "large_binary",
 }
 OVERVIEW_UNIQUE_COUNT_SKIPPED = "skipped_high_cardinality_scan"
 DESCRIPTIVE_CATEGORICAL_HIGH_CARDINALITY_ROW_THRESHOLD = OVERVIEW_UNIQUE_COUNT_ROW_THRESHOLD
@@ -38,11 +46,18 @@ def _get_dataset_or_404(dataset_id: int, db: Session) -> Dataset:
     return dataset
 
 
+def _get_dataset_record_or_404(dataset_id: int, db: Session) -> Dataset:
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="数据集不存在")
+    return dataset
+
+
 def _load_parquet_dataframe(file_path: str, columns: Optional[List[str]] = None) -> pd.DataFrame:
     parquet_file = pq.ParquetFile(file_path)
     available_columns = [field.name for field in parquet_file.schema_arrow]
     if columns:
-        missing_cols = [c for c in columns if c not in available_columns]
+        missing_cols = [column for column in columns if column not in available_columns]
         if missing_cols:
             raise ValueError(f"列不存在: {', '.join(missing_cols)}")
     return pd.read_parquet(file_path, columns=columns)
@@ -50,6 +65,11 @@ def _load_parquet_dataframe(file_path: str, columns: Optional[List[str]] = None)
 
 def _get_parquet_file(file_path: str) -> pq.ParquetFile:
     return pq.ParquetFile(file_path)
+
+
+def _unwrap_body_default(value: Any) -> Any:
+    """兼容直接调用路由函数的测试场景，Body(...) 默认值需要显式展开。"""
+    return getattr(value, "default", value)
 
 
 def _select_descriptive_columns(
@@ -76,22 +96,17 @@ def _select_descriptive_columns(
         else:
             other_columns.append(field.name)
 
-    selected = numeric_columns[:max_columns]
-    if len(selected) < max_columns:
-        selected.extend(other_columns[: max_columns - len(selected)])
-    return selected
+    selected_columns = numeric_columns[:max_columns]
+    if len(selected_columns) < max_columns:
+        selected_columns.extend(other_columns[: max_columns - len(selected_columns)])
+    return selected_columns
 
 
-def _should_skip_unique_count(field, row_count: int) -> bool:
+def _should_skip_unique_count(field: Any, row_count: int) -> bool:
     return row_count > OVERVIEW_UNIQUE_COUNT_ROW_THRESHOLD and str(field.type) in OVERVIEW_UNIQUE_COUNT_DISTINCT_SCAN_TYPES
 
 
-def _unwrap_body_default(value: Any):
-    """兼容直接调用路由函数的测试场景，Body(...) 默认值需要显式展开。"""
-    return getattr(value, "default", value)
-
-
-def _maybe_compute_unique_count(column_data, field, row_count: int):
+def _maybe_compute_unique_count(column_data: Any, field: Any, row_count: int) -> Optional[int]:
     if not _should_skip_unique_count(field, row_count):
         return int(pc.count_distinct(column_data).as_py())
 
@@ -109,7 +124,7 @@ def _should_skip_descriptive_categorical_scan(series: pd.Series, mode: str) -> b
         return False
 
     dtype_name = str(series.dtype).lower()
-    return any(marker in dtype_name for marker in ('object', 'string', 'category'))
+    return any(marker in dtype_name for marker in ("object", "string", "category"))
 
 
 def _build_categorical_stats(series: pd.Series, mode: str, top_values_limit: int) -> Dict[str, Any]:
@@ -121,11 +136,46 @@ def _build_categorical_stats(series: pd.Series, mode: str, top_values_limit: int
             "top_values_status": OVERVIEW_UNIQUE_COUNT_SKIPPED,
         }
 
-    val_counts = series.value_counts(dropna=True).head(top_values_limit).to_dict()
+    value_counts = series.value_counts(dropna=True).head(top_values_limit).to_dict()
     return {
         "unique_count": int(series.nunique(dropna=True)),
-        "top_values": {str(k): int(v) for k, v in val_counts.items()}
+        "top_values": {str(key): int(value) for key, value in value_counts.items()},
     }
+
+
+def _build_numeric_stats(numeric_df: pd.DataFrame) -> Dict[str, Dict[str, Optional[float]]]:
+    if numeric_df.empty:
+        return {}
+
+    numeric_stats: Dict[str, Dict[str, Optional[float]]] = {}
+    for column, metrics in numeric_df.describe().to_dict().items():
+        numeric_stats[column] = {key: float(value) if pd.notnull(value) else None for key, value in metrics.items()}
+    return numeric_stats
+
+
+def _build_descriptive_stats_payload(df: pd.DataFrame, mode: str) -> Dict[str, Any]:
+    numeric_df = df.select_dtypes(include=[np.number])
+    categorical_df = df.select_dtypes(exclude=[np.number])
+    top_values_limit = DESCRIPTIVE_SUMMARY_TOP_VALUES if mode == DESCRIPTIVE_SUMMARY_MODE else DESCRIPTIVE_FULL_TOP_VALUES
+
+    payload = {
+        "numeric": _build_numeric_stats(numeric_df),
+        "categorical": {},
+        "meta": {
+            "mode": mode,
+            "selected_columns": df.columns.tolist(),
+            "column_count": int(len(df.columns)),
+        },
+    }
+
+    for column in categorical_df.columns:
+        payload["categorical"][column] = _build_categorical_stats(
+            categorical_df[column],
+            mode=mode,
+            top_values_limit=top_values_limit,
+        )
+
+    return payload
 
 
 def _build_overview(file_path: str) -> Dict[str, Any]:
@@ -138,17 +188,17 @@ def _build_overview(file_path: str) -> Dict[str, Any]:
         "row_count": int(row_count),
         "col_count": len(schema),
         "memory_usage_mb": round(os.path.getsize(file_path) / (1024 * 1024), 2),
-        "columns": []
+        "columns": [],
     }
 
     for field in schema:
-        col_name = field.name
-        column_data = parquet_file.read(columns=[col_name]).column(0)
+        column_name = field.name
+        column_data = parquet_file.read(columns=[column_name]).column(0)
         missing_count = int(column_data.null_count)
         unique_count = _maybe_compute_unique_count(column_data, field, row_count)
 
         column_overview = {
-            "name": str(col_name),
+            "name": str(column_name),
             "type": str(field.type),
             "missing_count": missing_count,
             "missing_rate": float(missing_count / row_count) if row_count else 0.0,
@@ -182,6 +232,137 @@ def _filter_correlation_columns(df: pd.DataFrame) -> pd.DataFrame:
     return numeric_df[valid_columns]
 
 
+def _build_correlation_result(df: pd.DataFrame, method: str) -> Dict[str, Any]:
+    sampled_df = df.sample(n=10000, random_state=42) if len(df) > 10000 else df
+    numeric_df = _filter_correlation_columns(sampled_df)
+    corr_matrix = numeric_df.corr(method=method)
+    columns = corr_matrix.columns.tolist()
+    data: List[List[Any]] = []
+
+    for row_index, _row_name in enumerate(columns):
+        for column_index, _column_name in enumerate(columns):
+            value = corr_matrix.iloc[row_index, column_index]
+            data.append([row_index, column_index, float(value) if pd.notnull(value) else None])
+
+    return {
+        "columns": columns,
+        "data": data,
+        "method": method,
+    }
+
+
+def _build_regression_model(reg_type: str, poly_degree: int) -> Any:
+    if reg_type == "linear":
+        return LinearRegression()
+    if reg_type == "polynomial":
+        return make_pipeline(PolynomialFeatures(poly_degree), LinearRegression())
+    raise ValueError(f"不支持的回归类型: {reg_type}")
+
+
+def _build_fit_line(model: Any, features: np.ndarray) -> List[List[float]] | None:
+    if features.shape[1] != 1:
+        return None
+
+    x_range = np.linspace(features[:, 0].min(), features[:, 0].max(), 100).reshape(-1, 1)
+    y_range_pred = model.predict(x_range)
+    return [[float(x_range[index][0]), float(y_range_pred[index])] for index in range(100)]
+
+
+def _build_regression_result(
+    df: pd.DataFrame,
+    y_col: str,
+    x_cols: List[str],
+    reg_type: str,
+    poly_degree: int,
+    test_size: float,
+    random_state: int,
+) -> Dict[str, Any]:
+    for column in x_cols:
+        if not pd.api.types.is_numeric_dtype(df[column]):
+            raise ValueError(f"自变量包含非数值列 ({column})，请先在数据处理中进行编码")
+
+    analysis_df = df[[y_col] + x_cols].dropna()
+    features = analysis_df[x_cols].values
+    target = analysis_df[y_col].values
+
+    x_train, x_test, y_train, y_test = train_test_split(
+        features,
+        target,
+        test_size=test_size,
+        random_state=random_state,
+    )
+
+    model = _build_regression_model(reg_type, poly_degree)
+    model.fit(x_train, y_train)
+    y_pred = model.predict(x_test)
+
+    return {
+        "metrics": {
+            "r2": float(r2_score(y_test, y_pred)),
+            "mae": float(mean_absolute_error(y_test, y_pred)),
+            "mse": float(mean_squared_error(y_test, y_pred)),
+        },
+        "fit_line": _build_fit_line(model, features),
+        "coefficients": model.coef_.tolist() if reg_type == "linear" else None,
+        "intercept": float(model.intercept_) if reg_type == "linear" else None,
+    }
+
+
+def _build_histogram_aggregation(series: pd.Series, max_bins: int) -> Dict[str, Any]:
+    counts, bins = np.histogram(series.dropna(), bins=min(max_bins, max(series.nunique(), 1)))
+    return {
+        "x_axis": [f"{bins[index]:.2f}-{bins[index + 1]:.2f}" for index in range(len(bins) - 1)],
+        "y_axis": counts.tolist(),
+    }
+
+
+def _build_value_count_aggregation(series: pd.Series, max_bins: int) -> Dict[str, Any]:
+    aggregation_df = series.value_counts().head(max_bins).reset_index()
+    value_column = "count" if "count" in aggregation_df.columns else aggregation_df.columns[1]
+    label_column = aggregation_df.columns[0]
+    return {
+        "x_axis": aggregation_df[label_column].astype(str).tolist(),
+        "y_axis": aggregation_df[value_column].tolist(),
+    }
+
+
+def _build_grouped_aggregation(df: pd.DataFrame, x_col: str, y_col: str, agg_method: str, max_bins: int) -> Dict[str, Any]:
+    if not pd.api.types.is_numeric_dtype(df[y_col]):
+        raise ValueError("聚合目标列必须是数值型")
+
+    grouped = df.groupby(x_col)[y_col]
+    if agg_method == "sum":
+        aggregated = grouped.sum()
+    elif agg_method == "mean":
+        aggregated = grouped.mean()
+    elif agg_method == "max":
+        aggregated = grouped.max()
+    elif agg_method == "min":
+        aggregated = grouped.min()
+    else:
+        aggregated = grouped.count()
+
+    aggregated = aggregated.sort_values(ascending=False).head(max_bins)
+    return {
+        "x_axis": aggregated.index.astype(str).tolist(),
+        "y_axis": aggregated.values.tolist(),
+    }
+
+
+def _build_chart_aggregation_result(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: Optional[str],
+    agg_method: str,
+    max_bins: int,
+) -> Dict[str, Any]:
+    if pd.api.types.is_numeric_dtype(df[x_col]) and not y_col:
+        return _build_histogram_aggregation(df[x_col], max_bins)
+    if not y_col:
+        return _build_value_count_aggregation(df[x_col], max_bins)
+    return _build_grouped_aggregation(df, x_col, y_col, agg_method, max_bins)
+
+
 def _register_generated_artifact(
     db: Session,
     project_id: int,
@@ -203,299 +384,37 @@ def _register_generated_artifact(
     return artifact
 
 
-@router.get("/{dataset_id}/overview", response_model=StandardResponse[Dict[str, Any]])
-def get_dataset_overview(dataset_id: int, db: Session = Depends(get_db)):
-    """ST-03 自动数据概览"""
-    dataset = _get_dataset_or_404(dataset_id, db)
-
-    try:
-        overview = _build_overview(dataset.file_path)
-        return StandardResponse(success=True, data=overview)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成概览失败: {str(e)}")
-
-
-@router.post("/{dataset_id}/descriptive", response_model=StandardResponse[Dict[str, Any]])
-def get_descriptive_stats(
-    dataset_id: int,
-    columns: Optional[List[str]] = Body(None, embed=True),
-    mode: str = Body(DESCRIPTIVE_FULL_MODE, embed=True),
-    limit_columns: Optional[int] = Body(None, embed=True),
-    db: Session = Depends(get_db)
-):
-    """ST-04 描述性统计；支持 summary 轻量模式与列限制。"""
-    dataset = _get_dataset_or_404(dataset_id, db)
-
-    try:
-        columns = _unwrap_body_default(columns)
-        mode = _unwrap_body_default(mode)
-        limit_columns = _unwrap_body_default(limit_columns)
-        if mode not in {DESCRIPTIVE_FULL_MODE, DESCRIPTIVE_SUMMARY_MODE}:
-            raise ValueError(f"不支持的描述性统计模式: {mode}")
-
-        selected_columns = _select_descriptive_columns(dataset.file_path, columns, mode, limit_columns)
-        df = _load_parquet_dataframe(dataset.file_path, columns=selected_columns)
-
-        numeric_df = df.select_dtypes(include=[np.number])
-        categorical_df = df.select_dtypes(exclude=[np.number])
-        top_values_limit = DESCRIPTIVE_SUMMARY_TOP_VALUES if mode == DESCRIPTIVE_SUMMARY_MODE else DESCRIPTIVE_FULL_TOP_VALUES
-
-        stats = {
-            "numeric": {},
-            "categorical": {},
-            "meta": {
-                "mode": mode,
-                "selected_columns": df.columns.tolist(),
-                "column_count": int(len(df.columns))
-            }
-        }
-
-        if not numeric_df.empty:
-            desc = numeric_df.describe().to_dict()
-            for col, metrics in desc.items():
-                stats["numeric"][col] = {k: float(v) if pd.notnull(v) else None for k, v in metrics.items()}
-
-        if not categorical_df.empty:
-            for col in categorical_df.columns:
-                stats["categorical"][col] = _build_categorical_stats(
-                    categorical_df[col],
-                    mode=mode,
-                    top_values_limit=top_values_limit,
-                )
-
-        return StandardResponse(success=True, data=stats)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"计算描述性统计失败: {str(e)}")
-
-
-@router.post("/{dataset_id}/correlation", response_model=StandardResponse[Dict[str, Any]])
-def get_correlation_matrix(
-    dataset_id: int,
-    columns: Optional[List[str]] = Body(None, embed=True),
-    method: str = Body("pearson", embed=True),
-    db: Session = Depends(get_db)
-):
-    """ST-05 相关性矩阵"""
-    dataset = _get_dataset_or_404(dataset_id, db)
-
-    try:
-        columns = _unwrap_body_default(columns)
-        method = _unwrap_body_default(method)
-        df = _load_parquet_dataframe(dataset.file_path, columns=columns)
-        if len(df) > 10000:
-            df = df.sample(n=10000, random_state=42)
-
-        numeric_df = _filter_correlation_columns(df)
-
-        corr_matrix = numeric_df.corr(method=method)
-        cols = corr_matrix.columns.tolist()
-        data = []
-        for i in range(len(cols)):
-            for j in range(len(cols)):
-                val = corr_matrix.iloc[i, j]
-                val = float(val) if pd.notnull(val) else None
-                data.append([i, j, val])
-
-        result = {
-            "columns": cols,
-            "data": data,
-            "method": method
-        }
-        return StandardResponse(success=True, data=result)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"计算相关性矩阵失败: {str(exc)}") from exc
-
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.pipeline import make_pipeline
-from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
-from sklearn.model_selection import train_test_split
-
-@router.post("/{dataset_id}/regression", response_model=StandardResponse[Dict[str, Any]])
-def get_regression_analysis(
-    dataset_id: int,
-    y_col: str = Body(..., embed=True),
-    x_cols: List[str] = Body(..., embed=True),
-    reg_type: str = Body("linear", embed=True),
-    poly_degree: int = Body(2, embed=True),
-    test_size: float = Body(0.2, embed=True),
-    random_state: int = Body(42, embed=True),
-    db: Session = Depends(get_db)
-):
-    """ST-06 回归分析"""
-    dataset = _get_dataset_or_404(dataset_id, db)
-
-    try:
-        required_columns = [y_col] + x_cols
-        df = _load_parquet_dataframe(dataset.file_path, columns=required_columns)
-
-        for col in x_cols:
-            if not pd.api.types.is_numeric_dtype(df[col]):
-                raise ValueError(f"自变量包含非数值列 ({col})，请先在数据处理中进行编码")
-
-        analysis_df = df[required_columns].dropna()
-        X = analysis_df[x_cols].values
-        y = analysis_df[y_col].values
-
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state)
-
-        if reg_type == "linear":
-            model = LinearRegression()
-        elif reg_type == "polynomial":
-            model = make_pipeline(PolynomialFeatures(poly_degree), LinearRegression())
-        else:
-            raise ValueError(f"不支持的回归类型: {reg_type}")
-
-        model.fit(X_train, y_train)
-        y_pred = model.predict(X_test)
-
-        r2 = r2_score(y_test, y_pred)
-        mae = mean_absolute_error(y_test, y_pred)
-        mse = mean_squared_error(y_test, y_pred)
-
-        fit_line = None
-        if len(x_cols) == 1:
-            x_range = np.linspace(X[:, 0].min(), X[:, 0].max(), 100).reshape(-1, 1)
-            y_range_pred = model.predict(x_range)
-            fit_line = [[float(x_range[i][0]), float(y_range_pred[i])] for i in range(100)]
-
-        result = {
-            "metrics": {
-                "r2": float(r2),
-                "mae": float(mae),
-                "mse": float(mse)
-            },
-            "fit_line": fit_line,
-            "coefficients": model.coef_.tolist() if reg_type == "linear" else None,
-            "intercept": float(model.intercept_) if reg_type == "linear" else None
-        }
-        return StandardResponse(success=True, data=result)
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"回归分析失败: {str(e)}")
-
-
-@router.post("/{dataset_id}/aggregation", response_model=StandardResponse[Dict[str, Any]])
-def get_chart_aggregation(
-    dataset_id: int,
-    x_col: str = Body(..., embed=True),
-    y_col: Optional[str] = Body(None, embed=True),
-    agg_method: str = Body("count", embed=True),
-    max_bins: int = Body(50, embed=True),
-    db: Session = Depends(get_db)
-):
-    """用于图表渲染的后端聚合逻辑，防止卡顿"""
-    dataset = _get_dataset_or_404(dataset_id, db)
-
-    try:
-        columns = [x_col] + ([y_col] if y_col else [])
-        df = _load_parquet_dataframe(dataset.file_path, columns=columns)
-
-        result = {"x_axis": [], "y_axis": []}
-
-        if pd.api.types.is_numeric_dtype(df[x_col]) and not y_col:
-            counts, bins = np.histogram(df[x_col].dropna(), bins=min(max_bins, max(df[x_col].nunique(), 1)))
-            result["x_axis"] = [f"{bins[i]:.2f}-{bins[i+1]:.2f}" for i in range(len(bins)-1)]
-            result["y_axis"] = counts.tolist()
-        else:
-            if not y_col:
-                agg_df = df[x_col].value_counts().head(max_bins).reset_index()
-                value_col = 'count' if 'count' in agg_df.columns else agg_df.columns[1]
-                label_col = agg_df.columns[0]
-                result["x_axis"] = agg_df[label_col].astype(str).tolist()
-                result["y_axis"] = agg_df[value_col].tolist()
-            else:
-                if not pd.api.types.is_numeric_dtype(df[y_col]):
-                    raise ValueError("聚合目标列必须是数值型")
-
-                grouped = df.groupby(x_col)[y_col]
-                if agg_method == "sum":
-                    agg_res = grouped.sum()
-                elif agg_method == "mean":
-                    agg_res = grouped.mean()
-                elif agg_method == "max":
-                    agg_res = grouped.max()
-                elif agg_method == "min":
-                    agg_res = grouped.min()
-                else:
-                    agg_res = grouped.count()
-
-                agg_res = agg_res.sort_values(ascending=False).head(max_bins)
-                result["x_axis"] = agg_res.index.astype(str).tolist()
-                result["y_axis"] = agg_res.values.tolist()
-
-        return StandardResponse(success=True, data=result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"聚合计算失败: {str(e)}")
-
-import markdown
-import pdfkit
-import uuid
-
-@router.post("/{dataset_id}/report", response_model=StandardResponse[Dict[str, Any]])
-def generate_report(
-    dataset_id: int,
-    report_type: str = Body("markdown", embed=True),
-    title: str = Body("数据分析报告", embed=True),
-    content_blocks: List[Dict[str, Any]] = Body(..., embed=True),
-    db: Session = Depends(get_db)
-):
-    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
-    if not dataset:
-        raise HTTPException(status_code=404, detail="数据集不存在")
-
-    try:
-        md_content = f"# {title}\n\n"
-
-        for block in content_blocks:
-            b_type = block.get("type")
-            if b_type == "text":
-                md_content += f"{block.get('content', '')}\n\n"
-            elif b_type == "table":
-                md_content += f"## {block.get('title', '表格')}\n\n"
-                data = block.get("data", {})
-                if isinstance(data, dict):
-                    md_content += "| 属性 | 值 |\n| --- | --- |\n"
-                    for k, v in data.items():
-                        md_content += f"| {k} | {v} |\n"
-                md_content += "\n"
-            elif b_type == "chart":
-                md_content += f"## {block.get('title', '图表')}\n\n"
-                img_url = block.get("image_url", "")
-                md_content += f"![{block.get('title', '')}]({img_url})\n\n"
-
-        artifacts_dir = f"storage/projects/{dataset.project_id}/artifacts/reports"
-        os.makedirs(artifacts_dir, exist_ok=True)
-
-        report_id = str(uuid.uuid4())
-
-        if report_type == "markdown":
-            file_path = os.path.join(artifacts_dir, f"report_{report_id}.md")
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(md_content)
-            artifact = _register_generated_artifact(
-                db=db,
-                project_id=dataset.project_id,
-                name=f"{dataset.name}统计分析报告.md",
-                artifact_type="markdown",
-                file_path=file_path,
+def _build_markdown_report(title: str, content_blocks: List[Dict[str, Any]]) -> str:
+    lines = [f"# {title}", ""]
+    for block in content_blocks:
+        block_type = block.get("type")
+        if block_type == "text":
+            lines.extend([str(block.get("content", "")), ""])
+            continue
+        if block_type == "table":
+            lines.extend([f"## {block.get('title', '表格')}", ""])
+            data = block.get("data", {})
+            if isinstance(data, dict):
+                lines.extend(["| 属性 | 值 |", "| --- | --- |"])
+                for key, value in data.items():
+                    lines.append(f"| {key} | {value} |")
+            lines.append("")
+            continue
+        if block_type == "chart":
+            lines.extend(
+                [
+                    f"## {block.get('title', '图表')}",
+                    "",
+                    f"![{block.get('title', '')}]({block.get('image_url', '')})",
+                    "",
+                ]
             )
-            return StandardResponse(
-                success=True,
-                data={
-                    "artifact_id": artifact.id,
-                    "name": artifact.name,
-                    "file_path": file_path,
-                    "type": "markdown",
-                },
-            )
+    return "\n".join(lines)
 
-        if report_type == "pdf":
-            html_content = markdown.markdown(md_content, extensions=['tables'])
-            html_doc = f'''
+
+def _build_report_html(md_content: str) -> str:
+    html_content = markdown.markdown(md_content, extensions=["tables"])
+    return f"""
             <html>
             <head>
                 <meta charset="utf-8">
@@ -511,15 +430,161 @@ def generate_report(
                 {html_content}
             </body>
             </html>
-            '''
+            """
 
+
+def _serialize_artifact_response(artifact: Artifact, file_path: str, artifact_type: str) -> Dict[str, Any]:
+    return {
+        "artifact_id": artifact.id,
+        "name": artifact.name,
+        "file_path": file_path,
+        "type": artifact_type,
+    }
+
+
+@router.get("/{dataset_id}/overview", response_model=StandardResponse[Dict[str, Any]])
+def get_dataset_overview(dataset_id: int, db: Session = Depends(get_db)):
+    """ST-03 自动数据概览"""
+    dataset = _get_dataset_or_404(dataset_id, db)
+
+    try:
+        return StandardResponse(success=True, data=_build_overview(dataset.file_path))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"生成概览失败: {str(exc)}") from exc
+
+
+@router.post("/{dataset_id}/descriptive", response_model=StandardResponse[Dict[str, Any]])
+def get_descriptive_stats(
+    dataset_id: int,
+    columns: Optional[List[str]] = Body(None, embed=True),
+    mode: str = Body(DESCRIPTIVE_FULL_MODE, embed=True),
+    limit_columns: Optional[int] = Body(None, embed=True),
+    db: Session = Depends(get_db),
+):
+    """ST-04 描述性统计；支持 summary 轻量模式与列限制。"""
+    dataset = _get_dataset_or_404(dataset_id, db)
+
+    try:
+        columns = _unwrap_body_default(columns)
+        mode = _unwrap_body_default(mode)
+        limit_columns = _unwrap_body_default(limit_columns)
+        if mode not in {DESCRIPTIVE_FULL_MODE, DESCRIPTIVE_SUMMARY_MODE}:
+            raise ValueError(f"不支持的描述性统计模式: {mode}")
+
+        selected_columns = _select_descriptive_columns(dataset.file_path, columns, mode, limit_columns)
+        df = _load_parquet_dataframe(dataset.file_path, columns=selected_columns)
+        return StandardResponse(success=True, data=_build_descriptive_stats_payload(df, mode))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"计算描述性统计失败: {str(exc)}") from exc
+
+
+@router.post("/{dataset_id}/correlation", response_model=StandardResponse[Dict[str, Any]])
+def get_correlation_matrix(
+    dataset_id: int,
+    columns: Optional[List[str]] = Body(None, embed=True),
+    method: str = Body("pearson", embed=True),
+    db: Session = Depends(get_db),
+):
+    """ST-05 相关性矩阵"""
+    dataset = _get_dataset_or_404(dataset_id, db)
+
+    try:
+        columns = _unwrap_body_default(columns)
+        method = _unwrap_body_default(method)
+        df = _load_parquet_dataframe(dataset.file_path, columns=columns)
+        return StandardResponse(success=True, data=_build_correlation_result(df, method))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"计算相关性矩阵失败: {str(exc)}") from exc
+
+
+@router.post("/{dataset_id}/regression", response_model=StandardResponse[Dict[str, Any]])
+def get_regression_analysis(
+    dataset_id: int,
+    y_col: str = Body(..., embed=True),
+    x_cols: List[str] = Body(..., embed=True),
+    reg_type: str = Body("linear", embed=True),
+    poly_degree: int = Body(2, embed=True),
+    test_size: float = Body(0.2, embed=True),
+    random_state: int = Body(42, embed=True),
+    db: Session = Depends(get_db),
+):
+    """ST-06 回归分析"""
+    dataset = _get_dataset_or_404(dataset_id, db)
+
+    try:
+        required_columns = [y_col] + x_cols
+        df = _load_parquet_dataframe(dataset.file_path, columns=required_columns)
+        result = _build_regression_result(df, y_col, x_cols, reg_type, poly_degree, test_size, random_state)
+        return StandardResponse(success=True, data=result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"回归分析失败: {str(exc)}") from exc
+
+
+@router.post("/{dataset_id}/aggregation", response_model=StandardResponse[Dict[str, Any]])
+def get_chart_aggregation(
+    dataset_id: int,
+    x_col: str = Body(..., embed=True),
+    y_col: Optional[str] = Body(None, embed=True),
+    agg_method: str = Body("count", embed=True),
+    max_bins: int = Body(50, embed=True),
+    db: Session = Depends(get_db),
+):
+    """用于图表渲染的后端聚合逻辑，防止卡顿"""
+    dataset = _get_dataset_or_404(dataset_id, db)
+
+    try:
+        columns = [x_col] + ([y_col] if y_col else [])
+        df = _load_parquet_dataframe(dataset.file_path, columns=columns)
+        return StandardResponse(success=True, data=_build_chart_aggregation_result(df, x_col, y_col, agg_method, max_bins))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"聚合计算失败: {str(exc)}") from exc
+
+
+@router.post("/{dataset_id}/report", response_model=StandardResponse[Dict[str, Any]])
+def generate_report(
+    dataset_id: int,
+    report_type: str = Body("markdown", embed=True),
+    title: str = Body("数据分析报告", embed=True),
+    content_blocks: List[Dict[str, Any]] = Body(..., embed=True),
+    db: Session = Depends(get_db),
+):
+    dataset = _get_dataset_record_or_404(dataset_id, db)
+
+    try:
+        md_content = _build_markdown_report(title, content_blocks)
+        artifacts_dir = f"storage/projects/{dataset.project_id}/artifacts/reports"
+        os.makedirs(artifacts_dir, exist_ok=True)
+        report_id = str(uuid.uuid4())
+
+        if report_type == "markdown":
+            file_path = os.path.join(artifacts_dir, f"report_{report_id}.md")
+            with open(file_path, "w", encoding="utf-8") as file:
+                file.write(md_content)
+            artifact = _register_generated_artifact(
+                db=db,
+                project_id=dataset.project_id,
+                name=f"{dataset.name}统计分析报告.md",
+                artifact_type="markdown",
+                file_path=file_path,
+            )
+            return StandardResponse(success=True, data=_serialize_artifact_response(artifact, file_path, "markdown"))
+
+        if report_type == "pdf":
+            html_doc = _build_report_html(md_content)
             pdf_path = os.path.join(artifacts_dir, f"report_{report_id}.pdf")
             try:
-                options = {
-                    'enable-local-file-access': None,
-                    'encoding': "UTF-8",
-                }
-                pdfkit.from_string(html_doc, pdf_path, options=options)
+                pdfkit.from_string(
+                    html_doc,
+                    pdf_path,
+                    options={
+                        "enable-local-file-access": None,
+                        "encoding": "UTF-8",
+                    },
+                )
                 artifact = _register_generated_artifact(
                     db=db,
                     project_id=dataset.project_id,
@@ -527,21 +592,12 @@ def generate_report(
                     artifact_type="pdf",
                     file_path=pdf_path,
                 )
-                return StandardResponse(
-                    success=True,
-                    data={
-                        "artifact_id": artifact.id,
-                        "name": artifact.name,
-                        "file_path": pdf_path,
-                        "type": "pdf",
-                    },
-                )
-
+                return StandardResponse(success=True, data=_serialize_artifact_response(artifact, pdf_path, "pdf"))
             except Exception as exc:
-                raise HTTPException(status_code=500, detail=f"PDF 生成失败: {exc}")
+                raise HTTPException(status_code=500, detail=f"PDF 生成失败: {exc}") from exc
 
         raise HTTPException(status_code=400, detail="不支持的报告类型")
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"生成报告失败: {str(e)}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"生成报告失败: {str(exc)}") from exc

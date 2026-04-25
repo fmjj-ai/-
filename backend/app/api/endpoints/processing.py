@@ -2,7 +2,6 @@ import os
 import re
 from typing import Any, Dict, List
 
-import numpy as np
 import pandas as pd
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -22,15 +21,29 @@ def _get_dataset_or_404(dataset_id: int, db: Session) -> Dataset:
     return dataset
 
 
+def _load_dataset_dataframe(dataset: Dataset, columns: List[str] | None = None) -> pd.DataFrame:
+    return pd.read_parquet(dataset.file_path, columns=columns)
+
+
+def _save_dataset_dataframe(dataset: Dataset, df: pd.DataFrame, db: Session) -> None:
+    df.to_parquet(dataset.file_path, engine="pyarrow")
+    _refresh_dataset_metadata(dataset, df)
+    db.commit()
+
+
 def _refresh_dataset_metadata(dataset: Dataset, df: pd.DataFrame) -> None:
     dataset.row_count = len(df)
     dataset.col_count = len(df.columns)
     dataset.schema_info = [{"name": str(col), "type": str(dtype)} for col, dtype in df.dtypes.items()]
 
 
-def _build_encoding_preview(df: pd.DataFrame, column: str, separator: str = ",") -> Dict[str, Any]:
+def _ensure_column_exists(df: pd.DataFrame, column: str) -> None:
     if column not in df.columns:
         raise ValueError(f"列不存在: {column}")
+
+
+def _build_encoding_preview(df: pd.DataFrame, column: str, separator: str = ",") -> Dict[str, Any]:
+    _ensure_column_exists(df, column)
 
     series = df[column]
     non_null = series.dropna()
@@ -85,6 +98,189 @@ def _build_encoding_preview(df: pd.DataFrame, column: str, separator: str = ",")
     }
 
 
+def _fill_missing_values(df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
+    columns = params.get("columns", [])
+    method = params.get("method")
+    value = params.get("value")
+
+    for col in columns:
+        if col not in df.columns:
+            continue
+        if method == "mean" and pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = df[col].fillna(df[col].mean())
+        elif method == "median" and pd.api.types.is_numeric_dtype(df[col]):
+            df[col] = df[col].fillna(df[col].median())
+        elif method == "mode":
+            mode_val = df[col].mode()
+            if not mode_val.empty:
+                df[col] = df[col].fillna(mode_val.iloc[0])
+        elif method == "custom":
+            df[col] = df[col].fillna(value)
+
+    return df
+
+
+def _convert_column_type(df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
+    column = params.get("column")
+    target_type = params.get("target_type")
+    if column not in df.columns:
+        return df
+
+    if target_type == "numeric":
+        df[column] = pd.to_numeric(df[column], errors="coerce")
+    elif target_type == "string":
+        df[column] = df[column].astype(str)
+    elif target_type == "datetime":
+        df[column] = pd.to_datetime(df[column], errors="coerce")
+    return df
+
+
+def _normalize_columns(df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
+    columns = params.get("columns", [])
+    method = params.get("method", "minmax")
+
+    for col in columns:
+        if col not in df.columns or not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        if method == "minmax":
+            min_val = df[col].min()
+            max_val = df[col].max()
+            if max_val != min_val:
+                df[col] = (df[col] - min_val) / (max_val - min_val)
+        elif method == "zscore":
+            mean_val = df[col].mean()
+            std_val = df[col].std()
+            if std_val != 0:
+                df[col] = (df[col] - mean_val) / std_val
+
+    return df
+
+
+def _drop_duplicated_output_columns(df: pd.DataFrame, output_columns: List[str]) -> pd.DataFrame:
+    duplicated_columns = [name for name in output_columns if name in df.columns]
+    if duplicated_columns:
+        return df.drop(columns=duplicated_columns)
+    return df
+
+
+def _apply_one_hot_encode(df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
+    columns = params.get("columns", [])
+    keep_original = bool(params.get("keep_original", False))
+    if not columns:
+        return df
+
+    encoded = pd.get_dummies(
+        df[columns],
+        columns=columns,
+        prefix=columns,
+        dtype="int8",
+    )
+    encoded.columns = encoded.columns.astype(str)
+    df = _drop_duplicated_output_columns(df, encoded.columns.tolist())
+    df = pd.concat([df, encoded], axis=1)
+    if not keep_original:
+        df = df.drop(columns=columns)
+    return df
+
+
+def _apply_multi_hot_encode(df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
+    column = params.get("column")
+    separator = params.get("separator", ",")
+    keep_original = bool(params.get("keep_original", False))
+    if column not in df.columns:
+        return df
+
+    split_series = df[column].fillna("").astype(str).str.split(separator)
+    dummies = split_series.str.join("|").str.get_dummies(sep="|")
+    dummies = dummies.rename(columns=lambda item: f"{column}_{str(item).strip()}")
+    dummies = dummies.loc[:, [name for name in dummies.columns if name != f"{column}_"]]
+    dummies = dummies.astype("int8", copy=False)
+    df = _drop_duplicated_output_columns(df, dummies.columns.tolist())
+    df = pd.concat([df, dummies], axis=1)
+    if not keep_original:
+        df = df.drop(columns=[column])
+    return df
+
+
+def _build_ordinal_mapping(df: pd.DataFrame, params: Dict[str, Any]) -> Dict[str, int]:
+    mapping = params.get("mapping") or {}
+    if mapping:
+        return {str(key): int(value) for key, value in mapping.items()}
+
+    column = params.get("column")
+    separator = str(params.get("separator", ","))
+    preview = _build_encoding_preview(df[[column]], column=column, separator=separator)
+    return {str(key): int(value) for key, value in (preview.get("recommended_mapping") or {}).items()}
+
+
+def _apply_ordinal_encode(df: pd.DataFrame, params: Dict[str, Any]) -> pd.DataFrame:
+    column = params.get("column")
+    keep_original = bool(params.get("keep_original", True))
+    encoded_column = str(params.get("encoded_column") or f"{column}_编码").strip()
+    _ensure_column_exists(df, column)
+
+    mapping = _build_ordinal_mapping(df, params)
+    source_series = df[column]
+    mapped_series = source_series.where(source_series.isna(), source_series.astype(str).str.strip()).map(mapping)
+    df[encoded_column] = pd.to_numeric(mapped_series, errors="coerce")
+    if not keep_original:
+        df = df.drop(columns=[column])
+    return df
+
+
+def _apply_processing_operation(df: pd.DataFrame, operation: Dict[str, Any]) -> pd.DataFrame:
+    op_type = operation.get("type")
+    params = operation.get("params", {})
+
+    if op_type == "dropna":
+        subset = params.get("columns")
+        return df.dropna(subset=subset) if subset else df.dropna()
+
+    if op_type == "fillna":
+        return _fill_missing_values(df, params)
+
+    if op_type == "drop_duplicates":
+        subset = params.get("columns")
+        return df.drop_duplicates(subset=subset) if subset else df.drop_duplicates()
+
+    if op_type == "rename_columns":
+        mapping = params.get("mapping", {})
+        return df.rename(columns=mapping) if mapping else df
+
+    if op_type == "type_convert":
+        return _convert_column_type(df, params)
+
+    if op_type == "replace_value":
+        column = params.get("column")
+        if column in df.columns:
+            df[column] = df[column].replace(params.get("old_value"), params.get("new_value"))
+        return df
+
+    if op_type == "compute_column":
+        new_column = params.get("new_column")
+        expression = params.get("expression")
+        if new_column and expression:
+            try:
+                df[new_column] = df.eval(expression)
+            except Exception as exc:
+                raise ValueError(f"列计算失败 '{expression}': {str(exc)}") from exc
+        return df
+
+    if op_type == "normalize":
+        return _normalize_columns(df, params)
+
+    if op_type == "one_hot_encode":
+        return _apply_one_hot_encode(df, params)
+
+    if op_type == "multi_hot_encode":
+        return _apply_multi_hot_encode(df, params)
+
+    if op_type == "ordinal_encode":
+        return _apply_ordinal_encode(df, params)
+
+    raise ValueError(f"不支持的操作类型: {op_type}")
+
+
 @router.post("/{dataset_id}/outliers", response_model=StandardResponse[Dict[str, Any]])
 def handle_outliers(
     dataset_id: int,
@@ -98,9 +294,8 @@ def handle_outliers(
     dataset = _get_dataset_or_404(dataset_id, db)
 
     try:
-        df = pd.read_parquet(dataset.file_path)
-        if column not in df.columns:
-            raise ValueError(f"列不存在: {column}")
+        df = _load_dataset_dataframe(dataset)
+        _ensure_column_exists(df, column)
         result = QuickCleaningService.handle_outliers(
             df,
             column=column,
@@ -108,9 +303,7 @@ def handle_outliers(
             strategy=strategy,
             z_threshold=z_threshold,
         )
-        df.to_parquet(dataset.file_path, engine="pyarrow")
-        _refresh_dataset_metadata(dataset, df)
-        db.commit()
+        _save_dataset_dataframe(dataset, df, db)
         return StandardResponse(success=True, data=result)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -129,7 +322,7 @@ def preview_encoding(
     """在真正编码前返回列值样本、建议编码方式和默认映射。"""
     dataset = _get_dataset_or_404(dataset_id, db)
     try:
-        df = pd.read_parquet(dataset.file_path, columns=[column])
+        df = _load_dataset_dataframe(dataset, columns=[column])
         preview = _build_encoding_preview(df, column=column, separator=separator)
         return StandardResponse(success=True, data=preview)
     except ValueError as exc:
@@ -148,149 +341,12 @@ def process_dataset(
     dataset = _get_dataset_or_404(dataset_id, db)
 
     try:
-        df = pd.read_parquet(dataset.file_path)
+        df = _load_dataset_dataframe(dataset)
+        for operation in operations:
+            df = _apply_processing_operation(df, operation)
 
-        for op in operations:
-            op_type = op.get("type")
-            params = op.get("params", {})
-
-            if op_type == "dropna":
-                subset = params.get("columns")
-                df = df.dropna(subset=subset) if subset else df.dropna()
-
-            elif op_type == "fillna":
-                columns = params.get("columns", [])
-                method = params.get("method")
-                value = params.get("value")
-
-                for col in columns:
-                    if col not in df.columns:
-                        continue
-                    if method == "mean" and pd.api.types.is_numeric_dtype(df[col]):
-                        df[col] = df[col].fillna(df[col].mean())
-                    elif method == "median" and pd.api.types.is_numeric_dtype(df[col]):
-                        df[col] = df[col].fillna(df[col].median())
-                    elif method == "mode":
-                        mode_val = df[col].mode()
-                        if not mode_val.empty:
-                            df[col] = df[col].fillna(mode_val.iloc[0])
-                    elif method == "custom":
-                        df[col] = df[col].fillna(value)
-
-            elif op_type == "drop_duplicates":
-                subset = params.get("columns")
-                df = df.drop_duplicates(subset=subset) if subset else df.drop_duplicates()
-
-            elif op_type == "rename_columns":
-                mapping = params.get("mapping", {})
-                if mapping:
-                    df = df.rename(columns=mapping)
-
-            elif op_type == "type_convert":
-                col = params.get("column")
-                target_type = params.get("target_type")
-                if col in df.columns:
-                    if target_type == "numeric":
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-                    elif target_type == "string":
-                        df[col] = df[col].astype(str)
-                    elif target_type == "datetime":
-                        df[col] = pd.to_datetime(df[col], errors="coerce")
-
-            elif op_type == "replace_value":
-                col = params.get("column")
-                old_val = params.get("old_value")
-                new_val = params.get("new_value")
-                if col in df.columns:
-                    df[col] = df[col].replace(old_val, new_val)
-
-            elif op_type == "compute_column":
-                new_col = params.get("new_column")
-                expression = params.get("expression")
-                if new_col and expression:
-                    try:
-                        df[new_col] = df.eval(expression)
-                    except Exception as exc:
-                        raise ValueError(f"列计算失败 '{expression}': {str(exc)}") from exc
-
-            elif op_type == "normalize":
-                columns = params.get("columns", [])
-                method = params.get("method", "minmax")
-                for col in columns:
-                    if col in df.columns and pd.api.types.is_numeric_dtype(df[col]):
-                        if method == "minmax":
-                            min_val = df[col].min()
-                            max_val = df[col].max()
-                            if max_val != min_val:
-                                df[col] = (df[col] - min_val) / (max_val - min_val)
-                        elif method == "zscore":
-                            mean_val = df[col].mean()
-                            std_val = df[col].std()
-                            if std_val != 0:
-                                df[col] = (df[col] - mean_val) / std_val
-
-            elif op_type == "one_hot_encode":
-                columns = params.get("columns", [])
-                keep_original = bool(params.get("keep_original", False))
-                if columns:
-                    encoded = pd.get_dummies(
-                        df[columns],
-                        columns=columns,
-                        prefix=columns,
-                        dtype="int8",
-                    )
-                    encoded.columns = encoded.columns.astype(str)
-                    duplicated_columns = [name for name in encoded.columns if name in df.columns]
-                    if duplicated_columns:
-                        df = df.drop(columns=duplicated_columns)
-                    df = pd.concat([df, encoded], axis=1)
-                    if not keep_original:
-                        df = df.drop(columns=columns)
-
-            elif op_type == "multi_hot_encode":
-                col = params.get("column")
-                sep = params.get("separator", ",")
-                keep_original = bool(params.get("keep_original", False))
-                if col in df.columns:
-                    split_series = df[col].fillna("").astype(str).str.split(sep)
-                    dummies = split_series.str.join("|").str.get_dummies(sep="|")
-                    dummies = dummies.rename(columns=lambda item: f"{col}_{str(item).strip()}")
-                    dummies = dummies.loc[:, [name for name in dummies.columns if name != f"{col}_"]]
-                    dummies = dummies.astype("int8", copy=False)
-                    duplicated_columns = [name for name in dummies.columns if name in df.columns]
-                    if duplicated_columns:
-                        df = df.drop(columns=duplicated_columns)
-                    df = pd.concat([df, dummies], axis=1)
-                    if not keep_original:
-                        df = df.drop(columns=[col])
-
-            elif op_type == "ordinal_encode":
-                col = params.get("column")
-                keep_original = bool(params.get("keep_original", True))
-                encoded_column = str(params.get("encoded_column") or f"{col}_编码").strip()
-                mapping = params.get("mapping") or {}
-                if col not in df.columns:
-                    raise ValueError(f"列不存在: {col}")
-
-                if not mapping:
-                    preview = _build_encoding_preview(df[[col]], column=col, separator=str(params.get("separator", ",")))
-                    mapping = preview.get("recommended_mapping") or {}
-
-                normalized_mapping = {str(key): int(value) for key, value in mapping.items()}
-                source_series = df[col]
-                mapped_series = source_series.where(source_series.isna(), source_series.astype(str).str.strip()).map(normalized_mapping)
-                df[encoded_column] = pd.to_numeric(mapped_series, errors="coerce")
-                if not keep_original:
-                    df = df.drop(columns=[col])
-
-            else:
-                raise ValueError(f"不支持的操作类型: {op_type}")
-
-        df.to_parquet(dataset.file_path, engine="pyarrow")
-        _refresh_dataset_metadata(dataset, df)
-        db.commit()
+        _save_dataset_dataframe(dataset, df, db)
         return StandardResponse(success=True, data=True)
-
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

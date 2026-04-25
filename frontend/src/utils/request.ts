@@ -1,6 +1,8 @@
 import axios from 'axios'
-import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from 'axios'
+import type { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios'
 import { message } from 'ant-design-vue'
+
+export const getErrorDetail = (error: any, fallback: string) => error?.response?.data?.detail || fallback
 
 const request: AxiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
@@ -20,9 +22,7 @@ request.interceptors.request.use(
     // }
     return config
   },
-  (error: AxiosError) => {
-    return Promise.reject(error)
-  }
+  (error: AxiosError) => Promise.reject(error)
 )
 
 // Response Interceptor
