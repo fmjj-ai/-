@@ -1,10 +1,35 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>frontend</title>
+    <meta name="theme-color" content="#f7f3ec" />
+    <title>数据分析工作台</title>
+    <style>
+      /* 防白闪：在 JS 资源未加载完时提供宣纸基底 */
+      html, body { background-color: #f7f3ec; margin: 0; }
+      body { color: #2d3239; font-family: 'HarmonyOS Sans SC', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif; }
+      #app { min-height: 100vh; }
+      /* 极简加载提示 */
+      #app:empty::before {
+        content: '· · ·';
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: 'Source Han Serif SC', 'Songti SC', serif;
+        font-size: 24px;
+        letter-spacing: 0.6em;
+        color: rgba(74, 82, 96, 0.4);
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.35; }
+        50% { opacity: 0.85; }
+      }
+    </style>
   </head>
   <body>
     <div id="app"></div>
